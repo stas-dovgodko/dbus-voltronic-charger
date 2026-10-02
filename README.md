@@ -49,6 +49,68 @@ The serial port is mandatory configuration. The driver never guesses another
 port and its lifecycle scripts operate only on the configured tty. In the
 confirmed installation, Pylontech remains on `/dev/ttyUSB0` and is not touched.
 
+## Required RS-232 connection
+
+This driver requires a direct PI30 serial connection to the inverter port
+labelled **RS-232** or **RS-232 communication to PC**. The current driver does
+not communicate through the inverter USB port, Wi-Fi, Ethernet, VE.Direct,
+CAN/RS485 BMS port, remote-LCD port, parallel port or current-sharing port.
+The [official Axpert King II manual](https://voltronicpower.com/content/download/Manual/Axpert-KING%20II-Wifi-manual-20210621.pdf)
+shows RS-232, USB-to-PC, remote-panel and BMS connections as separate ports.
+
+The normal hardware path is:
+
+```text
+Cerbo GX USB-A
+    -> USB-to-RS232 adapter or model-specific USB/RS232 communication cable
+    -> inverter RS-232 communication port
+```
+
+Connection requirements:
+
+- use a real RS-232 interface with RS-232 electrical level conversion;
+- do not connect a bare 3.3 V or 5 V TTL UART adapter directly to the inverter;
+- the serial link needs TX, RX and signal ground, with TX and RX connected to
+  the corresponding opposite signals at the other end;
+- use the communication cable supplied with the inverter whenever possible;
+- serial settings are `2400 baud`, `8 data bits`, `no parity`, `1 stop bit`
+  (`8N1`), with no hardware or software flow control;
+- connect only one software process to the tty at a time.
+
+An RJ45-shaped socket is not automatically Ethernet or RS485. PI30-compatible
+models and clones may use DB9, RJ45 or proprietary cable ends, and their pin
+assignments are not guaranteed to match. There is deliberately no universal
+RJ45 pinout in this project: use the cable and pin assignment from the manual
+for the exact inverter model. Never connect an inverter communication socket
+to the Cerbo Ethernet port merely because both use an RJ45 connector.
+
+The confirmed King II installation uses a CH340/CH341-based USB serial cable
+that appears as `1a86:7523` and `/dev/ttyUSB1`. The USB chipset identifier alone
+does not prove that an adapter provides RS-232 voltage levels; a bare CH340 TTL
+module and a finished USB-to-RS232 cable can report the same chipset.
+
+Configure the complete Linux device path:
+
+```ini
+[serial]
+port = /dev/ttyUSB1
+baudrate = 2400
+```
+
+Before activation, identify the adapter and confirm that no other service owns
+that exact port:
+
+```sh
+udevadm info --query=property --name=/dev/ttyUSB1
+ls -l /dev/serial/by-id/ /dev/serial/by-path/ 2>/dev/null
+fuser /dev/ttyUSB1 2>/dev/null || true
+```
+
+A stable `/dev/serial/by-id/...` or `/dev/serial/by-path/...` link may be used
+as `serial.port`; the driver resolves it only to acquire the corresponding tty
+from Venus `serial-starter`. Do not run the probe and the D-Bus driver against
+the same port simultaneously.
+
 ## D-Bus data model
 
 The default service name is
