@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+LOG_DIR="/var/log/dbus-voltronic-charger"
+mkdir -p "$LOG_DIR"
+exec multilog t s25000 n4 "$LOG_DIR"
+

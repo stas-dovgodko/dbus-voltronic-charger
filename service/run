@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="/data/apps/dbus-voltronic-charger"
+export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export VELIB_PYTHON="/opt/victronenergy/dbus-systemcalc-py/ext/velib_python"
+
+exec 2>&1
+exec /usr/bin/python3 -u -m voltronic_charger.main \
+    --config "$APP_DIR/config.ini"
+

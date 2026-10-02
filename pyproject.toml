@@ -1,0 +1,15 @@
+[project]
+name = "voltronic-charger"
+version = "0.1.0"
+description = "Read-only Voltronic inverter telemetry bridge for Victron Venus OS"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = ["pyserial>=3.4"]
+
+[project.scripts]
+voltronic-probe = "voltronic_charger.probe:main"
+voltronic-charger = "voltronic_charger.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

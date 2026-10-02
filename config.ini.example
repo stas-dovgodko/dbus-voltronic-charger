@@ -1,0 +1,33 @@
+[serial]
+# The user's current Voltronic connection is /dev/ttyUSB1. This remains fully
+# configurable: replace it with the observed /dev/serial/by-id/... or
+# /dev/serial/by-path/... link when a stable adapter-to-inverter mapping exists.
+port = /dev/ttyUSB1
+# 2400/8N1 is specified by the referenced Voltronic PI30 document. Confirm it
+# against the King II 5000 before enabling the service.
+baudrate = 2400
+timeout = 2.0
+
+[protocol]
+# Keep this unconfirmed until a read-only probe returns a CRC-valid PI30
+# response whose QPIGS field count/layout matches the documented profile.
+profile = unconfirmed
+# QPIGS calls one field "battery charging current", but its attribution on the
+# exact King II 5000 is not yet verified. This release rejects true and
+# publishes no current or power into Venus system calculations.
+publish_battery_charging_current = false
+
+[device]
+model = Voltronic King II 5000
+custom_name = Voltronic King II 5000
+# REQUIRED later: choose an unused charger-class instance after inspecting the
+# live Cerbo. No instance is assumed while the installed Venus state is unknown.
+device_instance =
+# Must be unique on the Cerbo. The tty-like suffix is only an identifier; the
+# actual serial path is published separately under /Mgmt/Connection.
+service_name = com.victronenergy.charger.voltronic_king2
+
+[driver]
+poll_interval = 5
+failure_threshold = 3
+log_level = INFO
