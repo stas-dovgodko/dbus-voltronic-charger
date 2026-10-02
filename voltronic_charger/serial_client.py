@@ -36,6 +36,7 @@ class SerialQueryClient:
         self.command_delay = command_delay
         self._serial = serial_instance
         self._last_write_at = None
+        self._detected_utility_current_format = None
 
     def _open(self):
         if self._serial is None:
@@ -83,18 +84,51 @@ class SerialQueryClient:
         return decode_response(self.query_raw(command))
 
     def set_charge_current_limit(
-        self, scope: str, current: int, parallel_unit: int = 0
+        self,
+        scope: str,
+        current: int,
+        parallel_unit: int = 0,
+        utility_current_format: str = "auto",
     ) -> None:
-        frame = encode_charge_current_setting(scope, current, parallel_unit)
-        payload = decode_response(
-            self._exchange(frame, "{} charge-current setting".format(scope))
-        )
-        if payload != "(ACK":
+        if utility_current_format not in {"auto", "standard", "parallel"}:
             raise ProtocolError(
-                "inverter rejected {} charge-current setting: {}".format(
-                    scope, payload
-                )
+                "utility current format must be auto, standard, or parallel"
             )
+
+        formats = ("standard",)
+        if scope == "utility":
+            if utility_current_format == "auto":
+                if self._detected_utility_current_format is not None:
+                    formats = (self._detected_utility_current_format,)
+                else:
+                    formats = ("standard", "parallel")
+            else:
+                formats = (utility_current_format,)
+
+        responses = []
+        for selected_format in formats:
+            frame = encode_charge_current_setting(
+                scope,
+                current,
+                parallel_unit,
+                utility_current_format=selected_format,
+            )
+            payload = decode_response(
+                self._exchange(frame, "{} charge-current setting".format(scope))
+            )
+            responses.append("{}={}".format(selected_format, payload))
+            if payload == "(ACK":
+                if scope == "utility":
+                    self._detected_utility_current_format = selected_format
+                return
+            if payload != "(NAK":
+                break
+
+        raise ProtocolError(
+            "inverter rejected {} charge-current setting: {}".format(
+                scope, ", ".join(responses)
+            )
+        )
 
     def set_charger_source_priority(self, priority: int) -> None:
         frame = encode_charger_source_priority(priority)

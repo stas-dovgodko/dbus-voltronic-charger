@@ -38,6 +38,7 @@ class DeviceConfig:
 class ControlConfig:
     allow_current_limit_writes: bool
     parallel_unit: int
+    utility_current_format: str = "auto"
     allow_mode_writes: bool = False
     enabled_charger_source_priority: Optional[int] = None
 
@@ -98,13 +99,13 @@ def load_config(path: str) -> DriverConfig:
             ),
         ),
         device=DeviceConfig(
-            model=device_section.get("model", "Voltronic King II 5000").strip(),
+            model=device_section.get("model", "Voltronic PI30 Charger").strip(),
             custom_name=device_section.get(
-                "custom_name", "Voltronic King II 5000"
+                "custom_name", "Voltronic PI30 Charger"
             ).strip(),
             device_instance=device_instance,
             service_name=device_section.get(
-                "service_name", "com.victronenergy.charger.voltronic_king2"
+                "service_name", "com.victronenergy.charger.voltronic_pi30"
             ).strip(),
         ),
         control=ControlConfig(
@@ -117,6 +118,11 @@ def load_config(path: str) -> DriverConfig:
                 control_section.getint("parallel_unit", 0)
                 if control_section is not None
                 else 0
+            ),
+            utility_current_format=(
+                control_section.get("utility_current_format", "auto").strip().lower()
+                if control_section is not None
+                else "auto"
             ),
             allow_mode_writes=(
                 control_section.getboolean("allow_mode_writes", False)
@@ -173,6 +179,14 @@ def load_config(path: str) -> DriverConfig:
         )
     if config.control.parallel_unit < 0 or config.control.parallel_unit > 9:
         raise ValueError("control.parallel_unit must be between 0 and 9")
+    if config.control.utility_current_format not in {
+        "auto",
+        "standard",
+        "parallel",
+    }:
+        raise ValueError(
+            "control.utility_current_format must be auto, standard, or parallel"
+        )
     if (
         config.control.enabled_charger_source_priority is not None
         and config.control.enabled_charger_source_priority not in (0, 1, 2)

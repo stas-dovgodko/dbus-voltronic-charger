@@ -36,7 +36,7 @@ class ProtocolTest(unittest.TestCase):
         for scope, current, expected_payload in (
             ("total", 60, b"MCHGC060"),
             ("total", 140, b"MNCHGC0140"),
-            ("utility", 2, b"MUCHGC0002"),
+            ("utility", 2, b"MUCHGC002"),
         ):
             with self.subTest(scope=scope, current=current):
                 self.assertEqual(
@@ -44,11 +44,16 @@ class ProtocolTest(unittest.TestCase):
                     encode_charge_current_setting(scope, current),
                 )
 
-    def test_utility_setting_includes_configured_parallel_unit(self):
+    def test_parallel_utility_setting_includes_configured_unit(self):
         payload = b"MUCHGC3020"
         self.assertEqual(
             payload + crc_bytes(payload) + b"\r",
-            encode_charge_current_setting("utility", 20, parallel_unit=3),
+            encode_charge_current_setting(
+                "utility",
+                20,
+                parallel_unit=3,
+                utility_current_format="parallel",
+            ),
         )
 
     def test_current_setting_rejects_unscoped_or_invalid_values(self):
@@ -62,6 +67,13 @@ class ProtocolTest(unittest.TestCase):
             with self.subTest(scope=scope, current=current):
                 with self.assertRaises(ProtocolError):
                     encode_charge_current_setting(scope, current)
+
+        with self.assertRaises(ProtocolError):
+            encode_charge_current_setting(
+                "utility",
+                20,
+                utility_current_format="auto",
+            )
 
     def test_charger_source_priority_frames_are_narrowly_constructed(self):
         command = b"PCP03"

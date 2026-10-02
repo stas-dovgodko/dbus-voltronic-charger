@@ -27,6 +27,7 @@ failure_threshold = 3
 [control]
     allow_current_limit_writes = {allow_writes}
     parallel_unit = {parallel_unit}
+    utility_current_format = {utility_current_format}
     allow_mode_writes = {allow_mode_writes}
     enabled_charger_source_priority = {enabled_priority}
 """
@@ -43,6 +44,7 @@ class ConfigTest(unittest.TestCase):
             efficiency_percent=values.get("efficiency_percent", 95),
             allow_writes=str(values.get("allow_writes", False)).lower(),
             parallel_unit=values.get("parallel_unit", 0),
+            utility_current_format=values.get("utility_current_format", "auto"),
             allow_mode_writes=str(values.get("allow_mode_writes", False)).lower(),
             enabled_priority=values.get("enabled_priority", ""),
         )
@@ -97,6 +99,19 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._load(parallel_unit=10)
 
+    def test_utility_current_format_is_configurable_and_validated(self):
+        self.assertEqual("auto", self._load().control.utility_current_format)
+        self.assertEqual(
+            "standard",
+            self._load(utility_current_format="standard").control.utility_current_format,
+        )
+        self.assertEqual(
+            "parallel",
+            self._load(utility_current_format="parallel").control.utility_current_format,
+        )
+        with self.assertRaises(ValueError):
+            self._load(utility_current_format="unknown")
+
     def test_mode_writes_are_explicitly_opt_in(self):
         self.assertFalse(self._load().control.allow_mode_writes)
         self.assertTrue(self._load(allow_mode_writes=True).control.allow_mode_writes)
@@ -133,6 +148,7 @@ class ConfigTest(unittest.TestCase):
             efficiency_percent=95,
             allow_writes="false",
             parallel_unit=0,
+            utility_current_format="auto",
             allow_mode_writes="false",
             enabled_priority="",
         )
@@ -165,6 +181,7 @@ class ConfigTest(unittest.TestCase):
             efficiency_percent=95,
             allow_writes="false",
             parallel_unit=0,
+            utility_current_format="auto",
             allow_mode_writes="false",
             enabled_priority="",
         ).split("[control]", 1)[0]
@@ -177,6 +194,41 @@ class ConfigTest(unittest.TestCase):
             os.unlink(handle.name)
         self.assertFalse(config.control.allow_current_limit_writes)
         self.assertEqual(0, config.control.parallel_unit)
+        self.assertEqual("auto", config.control.utility_current_format)
+
+    def test_missing_device_labels_use_generic_defaults(self):
+        content = BASE.format(
+            port="/dev/ttyUSB1",
+            command_delay=0.5,
+            profile="pi30",
+            publish="true",
+            self_consumption_watts=70,
+            efficiency_percent=95,
+            allow_writes="false",
+            parallel_unit=0,
+            utility_current_format="auto",
+            allow_mode_writes="false",
+            enabled_priority="",
+        )
+        content = content.replace("model = Voltronic King II 5000\n", "")
+        content = content.replace("custom_name = King II\n", "")
+        content = content.replace(
+            "service_name = com.victronenergy.charger.voltronic_king2\n",
+            "",
+        )
+        handle = tempfile.NamedTemporaryFile("w", delete=False)
+        try:
+            handle.write(content)
+            handle.close()
+            config = load_config(handle.name)
+        finally:
+            os.unlink(handle.name)
+        self.assertEqual("Voltronic PI30 Charger", config.device.model)
+        self.assertEqual("Voltronic PI30 Charger", config.device.custom_name)
+        self.assertEqual(
+            "com.victronenergy.charger.voltronic_pi30",
+            config.device.service_name,
+        )
 
 
 if __name__ == "__main__":

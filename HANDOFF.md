@@ -2,13 +2,15 @@
 
 ## Target and repository state
 
-- Device: Voltronic King II 5000 on Venus OS v3.80 / Cerbo GX.
+- Tested device: Voltronic King II 5000 on Venus OS v3.80 / Cerbo GX.
+- Supported profile: compatible Voltronic PI30 devices with the strict classic
+  21-field QPIGS shape; model name is not a runtime gate.
 - D-Bus class: `com.victronenergy.charger`.
 - Cerbo application: `/data/apps/dbus-voltronic-charger`.
 - Serial port: required configuration, currently `/dev/ttyUSB1`.
 - Inverter adapter: CH340/CH341 `1a86:7523`.
 - Pylontech: separate PL2303 adapter on `/dev/ttyUSB0`; never target it.
-- Current package version: `0.6.1`.
+- Current package version: `0.7.0`.
 
 ## Serial conflict resolution
 
@@ -81,11 +83,12 @@ must match a live choice, receive `(ACK`, and match the next QPIRI read-back.
 The confirmed device advertised total choices `10,20,...,100 A` and utility
 choices `2,10,20,...,100 A`.
 
-Version 0.6.0 incorrectly sent the utility command without the King-family unit
-number (`MUCHGC050`) and received `(NAK`. Version 0.6.1 sends the configured
-parallel-unit number even for unit zero, for example `MUCHGC0020`. The live
-device accepted the corrected command and charged at 20 A. Integer strings from
-the Venus `dbus` CLI are accepted; fractional and non-numeric values fail.
+Version 0.6.0 sent the standard utility command (`MUCHGC050`) to the tested
+King II and received `(NAK`. Version 0.7.0 supports both observed PI30 forms.
+Auto mode first tries `MUCHGCnnn`, then tries `MUCHGCmnnn` only after a valid
+NAK and caches the accepted form. The live King II accepted `MUCHGC0020` and
+charged at 20 A. Integer strings from the Venus `dbus` CLI are accepted;
+fractional and non-numeric values fail.
 
 `/Ac/In/CurrentLimit` remains AC amperes as required by the Victron charger
 model. Its writer calculates a safe DC budget and rounds down to the highest
@@ -96,6 +99,11 @@ Mode control is live-confirmed: Mode 4 selected charger-source priority 3
 (solar only), and Mode 1 restored priority 2. Both changes received ACK and
 matching QPIRI read-back.
 
+`enabled_charger_source_priority` is not a normal fixed priority. It is used
+only after a restart that begins in solar-only priority 3, when the driver has
+no previously observed enabled value to restore. Values are `0=utility first`,
+`1=solar first`, and `2=solar+utility`; empty means reject the ambiguous On.
+
 ## Installation lifecycle
 
 The installer preserves `config.ini`, creates a timestamped backup, and leaves
@@ -104,19 +112,19 @@ required update sequence is therefore:
 
 ```sh
 /data/apps/dbus-voltronic-charger/deactivate.sh
-cd /data/dbus-voltronic-charger-0.6.1
+cd /data/dbus-voltronic-charger-0.7.0
 ./install.sh
 cd /data/apps/dbus-voltronic-charger
 ./activate.sh --confirm-pi30
 ```
 
-Activation requires explicit `PI30` confirmation, exact live `PI30` and
-`KING-5000` identity, a configured device instance, and the Venus Python/D-Bus
-runtime.
+Activation requires explicit `PI30` confirmation, a valid classic 21-field
+QPIGS sample, a configured device instance, and the Venus Python/D-Bus runtime.
+QMN/model identity is optional metadata.
 
 ## Verification status
 
-- 60 unit tests pass.
+- 65 unit tests pass.
 - `compileall` passes.
 - POSIX syntax checks pass for installation, activation, serial lifecycle and
   service scripts.

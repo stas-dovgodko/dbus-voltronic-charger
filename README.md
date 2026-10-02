@@ -1,7 +1,7 @@
 # dbus-voltronic-charger
 
-Venus OS driver for exposing a Voltronic King II 5000 as an additional
-`com.victronenergy.charger` service on a Cerbo GX.
+Venus OS driver for exposing a compatible Voltronic PI30 inverter/charger as
+an additional `com.victronenergy.charger` service on a Cerbo GX.
 
 The driver publishes battery-side charger telemetry, AC input/output data,
 charger state, errors and guarded current/mode controls. Setting commands are
@@ -9,7 +9,8 @@ disabled by default and must be explicitly enabled in `config.ini`.
 
 ## Venus OS integration
 
-The Voltronic charger appears alongside the native Victron inverter/chargers:
+The Voltronic charger appears alongside the native Victron inverter/chargers.
+These screenshots show the tested King II 5000 installation:
 
 ![Voltronic King II in the Venus OS device list](docs/images/venus-device-list.png)
 
@@ -19,7 +20,21 @@ AC input current and no active error:
 
 ![Voltronic King II charger details in Venus OS](docs/images/venus-voltronic-charger.png)
 
-## Confirmed target
+## Compatibility
+
+Runtime compatibility is based on protocol responses, not a hard-coded model
+name. The driver requires:
+
+- `QPI=PI30`;
+- a CRC-valid classic 21-field `QPIGS` response accepted by the strict parser;
+- 2400 baud, 8N1 serial communication.
+
+`QMN`, `QID` and firmware inquiries are optional identity metadata. A missing
+or different `QMN` value does not block telemetry. Current and Mode controls
+additionally require valid `QPIRI`, `QMCHGCR` and `QMUCHGCR` responses; when
+those are unavailable and controls are disabled, telemetry can still run.
+
+## Tested hardware
 
 - Inverter: Voltronic King II 5000.
 - Protocol identity: `PI30`.
@@ -37,7 +52,7 @@ confirmed installation, Pylontech remains on `/dev/ttyUSB0` and is not touched.
 ## D-Bus data model
 
 The default service name is
-`com.victronenergy.charger.voltronic_king2`.
+`com.victronenergy.charger.voltronic_pi30`.
 
 Standard charger paths include:
 
@@ -99,13 +114,17 @@ choice that does not exceed that budget.
 For an exact battery-side limit, write the DC extension directly:
 
 ```sh
-dbus -y com.victronenergy.charger.voltronic_king2 \
+dbus -y com.victronenergy.charger.voltronic_pi30 \
   /Settings/UtilityChargeCurrentLimit SetValue 20
 ```
 
-On the confirmed single King II, `parallel_unit=0` produces `MUCHGC0020` for a
-20 A utility DC limit. The live inverter accepted this frame and reported
-20.0 A charging after read-back verification.
+PI30 families use two observed utility-current command forms:
+`MUCHGCnnn` and `MUCHGCmnnn`, where `m` is the parallel unit. With
+`utility_current_format=auto`, the driver first tries the standard form and,
+only after a valid `(NAK`, tries the parallel form and caches the accepted
+variant. The confirmed King II accepted `MUCHGC0020` and reported 20.0 A after
+read-back verification. The format can also be fixed explicitly to `standard`
+or `parallel` in the configuration.
 
 `/Settings/ChargeCurrentLimit` is the total AC+PV charging limit. The inverter
 enforces both settings, so actual utility charging cannot exceed either one.
@@ -113,9 +132,15 @@ enforces both settings, so actual utility charging cannot exceed either one.
 ### Mode control
 
 `/Mode` follows the charger convention `1=On`, `4=Off`. Off selects charger
-source priority `3` (solar only). On restores the last known enabled priority,
-or `enabled_charger_source_priority` after a restart. The live King II has
-confirmed both transitions with QPIRI read-back.
+source priority `3` (solar only). Before switching Off, the driver remembers
+the current enabled priority and restores it on the next On command.
+
+`enabled_charger_source_priority` is only a restart fallback. It is used when
+the service starts while the inverter is already in priority `3`, so there is
+no earlier enabled value to restore. Set `0` for utility first, `1` for solar
+first, or `2` for solar and utility. Leave it empty to reject an ambiguous On
+request instead of guessing. The tested King II confirmed Off to priority 3
+and On back to priority 2 with QPIRI read-back.
 
 ## Configuration
 
@@ -139,12 +164,15 @@ ac_to_dc_efficiency_percent = 95
 [control]
 allow_current_limit_writes = false
 parallel_unit = 0
+utility_current_format = auto
 allow_mode_writes = false
 enabled_charger_source_priority =
 
 [device]
+model = Voltronic PI30 Charger
+custom_name = Voltronic PI30 Charger
 device_instance =
-service_name = com.victronenergy.charger.voltronic_king2
+service_name = com.victronenergy.charger.voltronic_pi30
 ```
 
 Choose an unused charger-class `device_instance` before activation:
@@ -155,8 +183,8 @@ dbus -y SERVICE_NAME /DeviceInstance GetValue
 ```
 
 Set `allow_current_limit_writes=true` and `allow_mode_writes=true` only when
-remote control is intentional. When On must work after restarting in
-solar-only mode, set `enabled_charger_source_priority` to `0`, `1`, or `2`.
+remote control is intentional. Existing installations retain their configured
+product/custom/service names because `install.sh` preserves `config.ini`.
 
 ## Fresh installation on Cerbo
 
@@ -164,10 +192,10 @@ Download and extract the packaged release:
 
 ```sh
 cd /data
-wget -O dbus-voltronic-charger-0.6.1.tar.gz \
-  https://raw.githubusercontent.com/stas-dovgodko/dbus-voltronic-charger/main/dist/dbus-voltronic-charger-0.6.1.tar.gz
-tar -xzf dbus-voltronic-charger-0.6.1.tar.gz
-cd dbus-voltronic-charger-0.6.1
+wget -O dbus-voltronic-charger-0.7.0.tar.gz \
+  https://raw.githubusercontent.com/stas-dovgodko/dbus-voltronic-charger/main/dist/dbus-voltronic-charger-0.7.0.tar.gz
+tar -xzf dbus-voltronic-charger-0.7.0.tar.gz
+cd dbus-voltronic-charger-0.7.0
 chmod +x install.sh activate.sh deactivate.sh uninstall.sh serial-port.sh
 ./install.sh
 ```
@@ -184,7 +212,8 @@ PYTHONPATH=. /usr/bin/python3 -m voltronic_charger.main \
   --config ./config.ini --once
 ```
 
-Activate only after the one-shot output identifies `PI30` and `KING-5000`:
+Activate only after the one-shot output identifies `PI30` and prints a valid
+parsed status object:
 
 ```sh
 ./activate.sh --confirm-pi30
@@ -202,13 +231,13 @@ the installed version first, then run the new installer:
 cd /data/apps/dbus-voltronic-charger
 ./deactivate.sh
 
-cd /data/dbus-voltronic-charger-0.6.1
+cd /data/dbus-voltronic-charger-0.7.0
 ./install.sh
 
 cd /data/apps/dbus-voltronic-charger
 ./activate.sh --confirm-pi30
 sleep 8
-dbus -y com.victronenergy.charger.voltronic_king2 /DriverVersion GetValue
+dbus -y com.victronenergy.charger.voltronic_pi30 /DriverVersion GetValue
 ```
 
 The installer creates a timestamped backup and preserves `config.ini`.
@@ -244,7 +273,8 @@ sh -n install.sh activate.sh deactivate.sh uninstall.sh serial-port.sh \
   service/run service/log/run
 ```
 
-The test suite covers protocol framing, live King II response parsing, dynamic
+The test suite covers protocol framing, generic PI30 identity handling, the
+live King II response, dynamic
 current capabilities, guarded writes, ACK/NAK handling, QPIRI verification,
 mode control, serial pacing, AC/DC publication, mixed-source protection and
 packaging safety.
@@ -254,8 +284,9 @@ packaging safety.
 - AC input current and power are estimates, not measurements.
 - AC+SCC charging cannot be split with the confirmed 21-field QPIGS response.
 - `/Ac/In/CurrentLimit` is a charger-only AC budget; it does not include loads
-  supplied through the King AC output.
-- The runtime currently requires exact live identity `PI30` and `KING-5000`.
+  supplied through the inverter AC output.
+- The runtime requires `PI30` and the supported classic 21-field QPIGS shape;
+  other PI30 response layouts need a separate parser profile.
 
 See [HANDOFF.md](HANDOFF.md) for captured protocol evidence and remaining live
 validation notes.

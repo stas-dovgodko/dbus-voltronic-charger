@@ -24,6 +24,8 @@ class FakeSerial:
         pass
 
     def read_until(self, _marker):
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
     def close(self):
@@ -90,13 +92,28 @@ class SerialClientTest(unittest.TestCase):
         sleep.assert_called_once()
         self.assertAlmostEqual(0.4, sleep.call_args.args[0])
 
-    def test_current_setting_requires_ack(self):
+    def test_standard_utility_current_setting_requires_ack(self):
         payload = b"(ACK"
         fake = FakeSerial(payload + crc_bytes(payload) + b"\r")
         client = SerialQueryClient("fake", serial_instance=fake)
         client.set_charge_current_limit("utility", 2)
-        command = b"MUCHGC0002"
+        command = b"MUCHGC002"
         self.assertEqual([command + crc_bytes(command) + b"\r"], fake.writes)
+
+    def test_auto_utility_format_falls_back_and_caches_parallel_variant(self):
+        ack = b"(ACK" + crc_bytes(b"(ACK") + b"\r"
+        nak = b"(NAK" + crc_bytes(b"(NAK") + b"\r"
+        fake = FakeSerial([nak, ack, ack])
+        client = SerialQueryClient("fake", serial_instance=fake)
+
+        client.set_charge_current_limit("utility", 20, 0, "auto")
+        client.set_charge_current_limit("utility", 30, 0, "auto")
+
+        commands = (b"MUCHGC020", b"MUCHGC0020", b"MUCHGC0030")
+        self.assertEqual(
+            [command + crc_bytes(command) + b"\r" for command in commands],
+            fake.writes,
+        )
 
     def test_current_setting_rejects_nak(self):
         payload = b"(NAK"

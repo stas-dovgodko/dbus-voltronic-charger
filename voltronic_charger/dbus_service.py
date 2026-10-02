@@ -1,4 +1,4 @@
-"""Venus charger publisher for the confirmed King II PI30 profile."""
+"""Venus charger publisher for compatible Voltronic PI30 devices."""
 
 from __future__ import annotations
 

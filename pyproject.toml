@@ -1,6 +1,6 @@
 [project]
 name = "voltronic-charger"
-version = "0.6.1"
+version = "0.7.0"
 description = "Voltronic AC charger telemetry and guarded control bridge for Venus OS"
 requires-python = ">=3.8"
 license = {text = "MIT"}

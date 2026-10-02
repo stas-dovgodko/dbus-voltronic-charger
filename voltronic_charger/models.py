@@ -30,7 +30,7 @@ class ChargeCurrentCapabilities:
 
 @dataclass(frozen=True)
 class Pi30Status:
-    """Classic 21-token QPIGS response from the confirmed PI30 profile."""
+    """Classic 21-token QPIGS response from a compatible PI30 device."""
 
     grid_voltage: float
     grid_frequency: float

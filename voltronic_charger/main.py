@@ -1,4 +1,4 @@
-"""One-shot parser and Venus D-Bus loop for the confirmed King II profile."""
+"""One-shot parser and Venus D-Bus loop for compatible PI30 devices."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from .serial_client import SerialQueryClient
 
 LOGGER = logging.getLogger("voltronic-charger")
 EXPECTED_PROTOCOL = "PI30"
-EXPECTED_MODEL = "KING-5000"
 
 
 def _arguments(argv=None):
@@ -52,13 +51,11 @@ def _identify(client):
         raise ProtocolError(
             "expected protocol {}, received {}".format(EXPECTED_PROTOCOL, protocol_id)
         )
-    inverter_model = parse_text_response(client.query("QMN"))
-    if inverter_model != EXPECTED_MODEL:
-        raise ProtocolError(
-            "expected model {}, received {}".format(EXPECTED_MODEL, inverter_model)
-        )
-
-    values = {"protocol_id": protocol_id, "inverter_model": inverter_model}
+    values = {"protocol_id": protocol_id}
+    try:
+        values["inverter_model"] = parse_text_response(client.query("QMN"))
+    except Exception as exc:
+        LOGGER.warning("QMN inquiry unavailable: %s", exc)
     try:
         values["serial_number"] = parse_text_response(client.query("QID"))
     except Exception as exc:
@@ -79,6 +76,18 @@ def _read_charge_current_capabilities(client):
         client.query("QMCHGCR"),
         client.query("QMUCHGCR"),
     )
+
+
+def _read_available_charge_current_capabilities(client, required=False):
+    try:
+        return _read_charge_current_capabilities(client)
+    except Exception as exc:
+        if required:
+            raise ProtocolError(
+                "charge-current capabilities are required when controls are enabled"
+            ) from exc
+        LOGGER.warning("charge-current capabilities unavailable: %s", exc)
+        return None
 
 
 def _set_charge_current_limit(client, capabilities, control, scope, value):
@@ -110,7 +119,12 @@ def _set_charge_current_limit(client, capabilities, control, scope, value):
             )
         )
 
-    client.set_charge_current_limit(scope, requested, control.parallel_unit)
+    client.set_charge_current_limit(
+        scope,
+        requested,
+        control.parallel_unit,
+        control.utility_current_format,
+    )
     utility_limit, total_limit = parse_qpiri_charge_limits(client.query("QPIRI"))
     verified = total_limit if scope == "total" else utility_limit
     if verified != requested:
@@ -208,8 +222,14 @@ def _run(config) -> int:
         config.serial.command_delay,
     )
     identity = _identify(client)
-    capabilities = _read_charge_current_capabilities(client)
     initial = _read_status(client)
+    capabilities = _read_available_charge_current_capabilities(
+        client,
+        required=(
+            config.control.allow_current_limit_writes
+            or config.control.allow_mode_writes
+        ),
+    )
     latest_status = [initial]
     DBusGMainLoop(set_as_default=True)
 
@@ -251,12 +271,18 @@ def _run(config) -> int:
                 return False
             return current_limit_writer("utility", utility_limit)
 
-    current_priority = capabilities.charger_source_priority
+    current_priority = (
+        capabilities.charger_source_priority if capabilities is not None else None
+    )
     enabled_priority = config.control.enabled_charger_source_priority
-    if enabled_priority is None and current_priority != 3:
+    if (
+        enabled_priority is None
+        and current_priority is not None
+        and current_priority != 3
+    ):
         enabled_priority = current_priority
     mode_writer = None
-    if config.control.allow_mode_writes:
+    if config.control.allow_mode_writes and capabilities is not None:
         def mode_writer(value):
             nonlocal current_priority, enabled_priority
             if current_priority != 3:
@@ -350,21 +376,34 @@ def main(argv=None) -> int:
     if args.once:
         try:
             identity = _identify(client)
-            capabilities = _read_charge_current_capabilities(client)
+            status = _read_status(client)
+            capabilities = _read_available_charge_current_capabilities(
+                client,
+                required=(
+                    config.control.allow_current_limit_writes
+                    or config.control.allow_mode_writes
+                ),
+            )
             output = {
                 "identity": identity,
-                "charge_current_capabilities": {
-                    "charger_source_priority": capabilities.charger_source_priority,
-                    "utility_limit": capabilities.utility_limit,
-                    "total_limit": capabilities.total_limit,
-                    "selectable_utility_limits": list(
-                        capabilities.selectable_utility_limits
-                    ),
-                    "selectable_total_limits": list(
-                        capabilities.selectable_total_limits
-                    ),
-                },
-                "status": _read_status(client).as_dict(),
+                "charge_current_capabilities": (
+                    {
+                        "charger_source_priority": (
+                            capabilities.charger_source_priority
+                        ),
+                        "utility_limit": capabilities.utility_limit,
+                        "total_limit": capabilities.total_limit,
+                        "selectable_utility_limits": list(
+                            capabilities.selectable_utility_limits
+                        ),
+                        "selectable_total_limits": list(
+                            capabilities.selectable_total_limits
+                        ),
+                    }
+                    if capabilities is not None
+                    else None
+                ),
+                "status": status.as_dict(),
             }
             print(json.dumps(output, indent=2, sort_keys=True))
             return 0

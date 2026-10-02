@@ -3,6 +3,7 @@ import unittest
 from voltronic_charger.config import ControlConfig, PowerEstimationConfig
 from voltronic_charger.main import (
     _identify,
+    _read_available_charge_current_capabilities,
     _read_charge_current_capabilities,
     _set_charger_mode,
     _set_charge_current_limit,
@@ -28,8 +29,12 @@ class FakeClient:
             raise response
         return response
 
-    def set_charge_current_limit(self, scope, current, parallel_unit):
-        self.settings.append((scope, current, parallel_unit))
+    def set_charge_current_limit(
+        self, scope, current, parallel_unit, utility_current_format
+    ):
+        self.settings.append(
+            (scope, current, parallel_unit, utility_current_format)
+        )
 
     def set_charger_source_priority(self, priority):
         self.priorities.append(priority)
@@ -62,10 +67,30 @@ class MainIdentificationTest(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             _identify(client)
 
-    def test_wrong_model_is_rejected_before_publication(self):
-        client = FakeClient({"QPI": "(PI30", "QMN": "(OTHER"})
-        with self.assertRaises(ProtocolError):
-            _identify(client)
+    def test_other_pi30_model_is_accepted(self):
+        client = FakeClient(
+            {
+                "QPI": "(PI30",
+                "QMN": "(OTHER-PI30",
+                "QID": ProtocolError("NAK"),
+                "QVFW": ProtocolError("NAK"),
+                "QVFW2": ProtocolError("NAK"),
+            }
+        )
+        self.assertEqual("OTHER-PI30", _identify(client)["inverter_model"])
+
+    def test_qmn_is_optional_for_compatible_pi30_device(self):
+        client = FakeClient(
+            {
+                "QPI": "(PI30",
+                "QMN": ProtocolError("NAK"),
+                "QID": ProtocolError("NAK"),
+                "QVFW": "(VERFW:00072.00",
+            }
+        )
+        identity = _identify(client)
+        self.assertEqual("PI30", identity["protocol_id"])
+        self.assertNotIn("inverter_model", identity)
 
     def test_charge_current_capabilities_are_queried_from_inverter(self):
         client = FakeClient(
@@ -85,6 +110,14 @@ class MainIdentificationTest(unittest.TestCase):
             ["QPIRI", "QMCHGCR", "QMUCHGCR"],
             client.commands,
         )
+
+    def test_unavailable_capabilities_are_optional_for_telemetry(self):
+        client = FakeClient({"QPIRI": ProtocolError("NAK")})
+        self.assertIsNone(
+            _read_available_charge_current_capabilities(client, required=False)
+        )
+        with self.assertRaises(ProtocolError):
+            _read_available_charge_current_capabilities(client, required=True)
 
     def test_current_setting_is_allowlisted_and_verified_by_qpiri(self):
         client = FakeClient(
@@ -108,7 +141,7 @@ class MainIdentificationTest(unittest.TestCase):
             "total",
             50,
         )
-        self.assertEqual([("total", 50, 0)], client.settings)
+        self.assertEqual([("total", 50, 0, "auto")], client.settings)
         self.assertEqual(["QPIRI"], client.commands)
 
     def test_current_setting_accepts_integer_string_from_dbus_cli(self):
@@ -136,7 +169,7 @@ class MainIdentificationTest(unittest.TestCase):
                 "20",
             ),
         )
-        self.assertEqual([("utility", 20, 0)], client.settings)
+        self.assertEqual([("utility", 20, 0, "auto")], client.settings)
 
     def test_current_setting_rejects_fractional_string(self):
         capabilities = ChargeCurrentCapabilities(

@@ -8,8 +8,8 @@ timeout = 2.0
 command_delay = 0.5
 
 [protocol]
-# The live King II returned QPI=PI30, QMN=KING-5000 and a CRC-valid classic
-# 21-field QPIGS response after the serial port was made exclusive.
+# Use this profile only for a CRC-valid PI30 device with the classic 21-field
+# QPIGS response accepted by the one-shot validation.
 profile = pi30
 # Publish QPIGS field 10 as charger output current. Power is calculated once as
 # battery voltage times this current; the separate PV power token is diagnostic.
@@ -25,22 +25,26 @@ ac_to_dc_efficiency_percent = 95
 # Safe default: current-limit paths are read-only. Enable to make both the
 # native DC limit extensions and standard /Ac/In/CurrentLimit writeable.
 allow_current_limit_writes = false
-# Single inverter/master unit. Used only for >100 A total-current commands.
+# Parallel/master unit number used by PI30 command variants that require it.
 parallel_unit = 0
+# Utility-current command form. Auto tries MUCHGCnnn first, then MUCHGCmnnn
+# only after a valid NAK, and caches the accepted form for later writes.
+# Explicit alternatives: standard or parallel.
+utility_current_format = auto
 # Safe default: /Mode is read-only. When enabled, Mode=4 selects solar-only
 # charging and Mode=1 restores the priority observed before Mode=4.
 allow_mode_writes = false
-# Optional fallback for enabling utility charging after a service restart while
-# the inverter is already in solar-only mode: 0=utility first, 1=solar first,
-# 2=solar and utility. Leave empty to reject that ambiguous write.
+# Restart-only fallback for Mode=On when the inverter starts in solar-only
+# priority and no previous enabled value was observed. 0=utility first,
+# 1=solar first, 2=solar and utility. Empty rejects the ambiguous request.
 enabled_charger_source_priority =
 
 [device]
-model = Voltronic King II 5000
-custom_name = Voltronic King II 5000
+model = Voltronic PI30 Charger
+custom_name = Voltronic PI30 Charger
 # REQUIRED: choose an unused charger-class instance on the live Cerbo.
 device_instance =
-service_name = com.victronenergy.charger.voltronic_king2
+service_name = com.victronenergy.charger.voltronic_pi30
 
 [driver]
 poll_interval = 5

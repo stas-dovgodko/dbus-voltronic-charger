@@ -80,7 +80,10 @@ def encode_query(command: str) -> bytes:
 
 
 def encode_charge_current_setting(
-    scope: str, current: int, parallel_unit: int = 0
+    scope: str,
+    current: int,
+    parallel_unit: int = 0,
+    utility_current_format: str = "standard",
 ) -> bytes:
     """Encode one narrowly scoped current-limit command.
 
@@ -96,6 +99,10 @@ def encode_charge_current_setting(
         raise ProtocolError("parallel unit must be an integer")
     if parallel_unit < 0 or parallel_unit > 9:
         raise ProtocolError("parallel unit must be between 0 and 9")
+    if utility_current_format not in {"standard", "parallel"}:
+        raise ProtocolError(
+            "utility current format must be standard or parallel"
+        )
 
     if scope == "total":
         if current > 100:
@@ -103,9 +110,10 @@ def encode_charge_current_setting(
         else:
             command = "MCHGC{:03d}".format(current)
     elif scope == "utility":
-        # King-family PI30 firmware expects the target parallel-unit number
-        # before the three-digit utility current, including for unit zero.
-        command = "MUCHGC{}{:03d}".format(parallel_unit, current)
+        if utility_current_format == "parallel":
+            command = "MUCHGC{}{:03d}".format(parallel_unit, current)
+        else:
+            command = "MUCHGC{:03d}".format(current)
     else:
         raise ProtocolError("unknown charge-current setting scope: {!r}".format(scope))
 
