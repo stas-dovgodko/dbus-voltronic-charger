@@ -10,7 +10,7 @@
 - Serial port: required configuration, currently `/dev/ttyUSB1`.
 - Inverter adapter: CH340/CH341 `1a86:7523`.
 - Pylontech: separate PL2303 adapter on `/dev/ttyUSB0`; never target it.
-- Current package version: `0.7.0`.
+- Current package version: `0.7.1`.
 
 ## Serial conflict resolution
 
@@ -106,13 +106,21 @@ no previously observed enabled value to restore. Values are `0=utility first`,
 
 ## Installation lifecycle
 
+The runtime registers its D-Bus service before the first successful serial
+reply. With the inverter off it remains in one process with `/Connected=0`
+instead of exiting into a runit restart loop. After a live connection fails
+`failure_threshold` times, live values are invalidated and reconnect attempts
+continue every `poll_interval`. Reconnection revalidates PI30 identity, strict
+QPIGS telemetry and control capabilities before publication; writes are
+refused while disconnected.
+
 The installer preserves `config.ini`, creates a timestamped backup, and leaves
 the service inactive. It refuses to overwrite an active service link. The
 required update sequence is therefore:
 
 ```sh
 /data/apps/dbus-voltronic-charger/deactivate.sh
-cd /data/dbus-voltronic-charger-0.7.0
+cd /data/dbus-voltronic-charger-0.7.1
 ./install.sh
 cd /data/apps/dbus-voltronic-charger
 ./activate.sh --confirm-pi30
@@ -124,7 +132,7 @@ QMN/model identity is optional metadata.
 
 ## Verification status
 
-- 65 unit tests pass.
+- 68 unit tests pass.
 - `compileall` passes.
 - POSIX syntax checks pass for installation, activation, serial lifecycle and
   service scripts.

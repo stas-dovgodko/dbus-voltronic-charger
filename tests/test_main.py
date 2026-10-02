@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
 
 from voltronic_charger.config import ControlConfig, PowerEstimationConfig
 from voltronic_charger.main import (
+    _RuntimeController,
     _identify,
     _read_available_charge_current_capabilities,
     _read_charge_current_capabilities,
@@ -21,10 +23,13 @@ class FakeClient:
         self.commands = []
         self.settings = []
         self.priorities = []
+        self.close_count = 0
 
     def query(self, command):
         self.commands.append(command)
         response = self.responses[command]
+        if isinstance(response, list):
+            response = response.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
@@ -38,6 +43,43 @@ class FakeClient:
 
     def set_charger_source_priority(self, priority):
         self.priorities.append(priority)
+
+    def close(self):
+        self.close_count += 1
+
+
+class FakeRuntimeService:
+    def __init__(self):
+        self.identities = []
+        self.capabilities = []
+        self.statuses = []
+        self.disconnect_count = 0
+
+    def set_identity(self, **identity):
+        self.identities.append(identity)
+
+    def set_capabilities(self, capabilities):
+        self.capabilities.append(capabilities)
+
+    def publish(self, status):
+        self.statuses.append(status)
+
+    def disconnect(self):
+        self.disconnect_count += 1
+
+
+def runtime_config(failure_threshold=2):
+    return SimpleNamespace(
+        control=SimpleNamespace(
+            allow_current_limit_writes=False,
+            allow_mode_writes=False,
+            enabled_charger_source_priority=None,
+            parallel_unit=0,
+            utility_current_format="auto",
+        ),
+        power_estimation=PowerEstimationConfig(70.0, 95.0),
+        failure_threshold=failure_threshold,
+    )
 
 
 class MainIdentificationTest(unittest.TestCase):
@@ -118,6 +160,65 @@ class MainIdentificationTest(unittest.TestCase):
         )
         with self.assertRaises(ProtocolError):
             _read_available_charge_current_capabilities(client, required=True)
+
+    def test_runtime_stays_alive_when_inverter_is_off_then_recovers(self):
+        client = FakeClient(
+            {
+                "QPI": [ProtocolError("no response"), "(PI30"],
+                "QMN": "(KING-5000",
+                "QID": "(96332108100916",
+                "QVFW": "(VERFW:00072.00",
+                "QPIGS": DOCUMENTED_SHAPE,
+                "QPIRI": ProtocolError("NAK"),
+            }
+        )
+        service = FakeRuntimeService()
+        controller = _RuntimeController(client, runtime_config())
+        controller.attach_service(service)
+
+        self.assertTrue(controller.poll())
+        self.assertFalse(controller.connected)
+        self.assertEqual(1, client.close_count)
+        self.assertEqual([], service.statuses)
+
+        self.assertTrue(controller.poll())
+        self.assertTrue(controller.connected)
+        self.assertEqual(1, len(service.statuses))
+        self.assertEqual("PI30", service.identities[-1]["protocol_id"])
+
+    def test_runtime_disconnects_without_exiting_and_reconnects(self):
+        client = FakeClient(
+            {
+                "QPI": "(PI30",
+                "QMN": "(KING-5000",
+                "QID": "(96332108100916",
+                "QVFW": "(VERFW:00072.00",
+                "QPIGS": [
+                    DOCUMENTED_SHAPE,
+                    ProtocolError("timeout one"),
+                    ProtocolError("timeout two"),
+                    DOCUMENTED_SHAPE,
+                ],
+                "QPIRI": ProtocolError("NAK"),
+            }
+        )
+        service = FakeRuntimeService()
+        controller = _RuntimeController(client, runtime_config(failure_threshold=2))
+        controller.attach_service(service)
+
+        self.assertTrue(controller.poll())
+        self.assertTrue(controller.poll())
+        self.assertTrue(controller.connected)
+        self.assertEqual(0, service.disconnect_count)
+
+        self.assertTrue(controller.poll())
+        self.assertFalse(controller.connected)
+        self.assertEqual(1, service.disconnect_count)
+
+        self.assertTrue(controller.poll())
+        self.assertTrue(controller.connected)
+        self.assertEqual(2, len(service.statuses))
+        self.assertEqual(2, len(service.identities))
 
     def test_current_setting_is_allowlisted_and_verified_by_qpiri(self):
         client = FakeClient(

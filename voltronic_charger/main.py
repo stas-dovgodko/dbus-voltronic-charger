@@ -209,6 +209,174 @@ def _set_charger_mode(client, current_priority, enabled_priority, mode):
     return verified
 
 
+class _RuntimeController:
+    """Keep one D-Bus service alive while the serial device disconnects."""
+
+    def __init__(self, client, config):
+        self.client = client
+        self.config = config
+        self.service = None
+        self.connected = False
+        self.failures = 0
+        self.latest_status = None
+        self.capabilities = None
+        self.current_priority = None
+        self.enabled_priority = config.control.enabled_charger_source_priority
+
+    def attach_service(self, service):
+        self.service = service
+
+    def _controls_require_capabilities(self):
+        return (
+            self.config.control.allow_current_limit_writes
+            or self.config.control.allow_mode_writes
+        )
+
+    def _read_reconnect_snapshot(self):
+        identity = _identify(self.client)
+        status = _read_status(self.client)
+        capabilities = _read_available_charge_current_capabilities(
+            self.client,
+            required=self._controls_require_capabilities(),
+        )
+        return identity, status, capabilities
+
+    def poll(self):
+        reconnecting = not self.connected
+        try:
+            if reconnecting:
+                identity, status, capabilities = self._read_reconnect_snapshot()
+                self.capabilities = capabilities
+                self.current_priority = (
+                    capabilities.charger_source_priority
+                    if capabilities is not None
+                    else None
+                )
+                if (
+                    self.enabled_priority is None
+                    and self.current_priority is not None
+                    and self.current_priority != 3
+                ):
+                    self.enabled_priority = self.current_priority
+                if self.service is not None:
+                    self.service.set_identity(**identity)
+                    self.service.set_capabilities(capabilities)
+            else:
+                status = _read_status(self.client)
+
+            self.latest_status = status
+            if self.service is not None:
+                self.service.publish(status)
+            if reconnecting:
+                LOGGER.info("inverter connection established")
+            self.connected = True
+            self.failures = 0
+        except Exception as exc:
+            self.failures += 1
+            self.client.close()
+            if self.connected and self.failures >= self.config.failure_threshold:
+                self.connected = False
+                if self.service is not None:
+                    self.service.disconnect()
+                LOGGER.warning(
+                    "inverter disconnected after %d consecutive failures: %s; "
+                    "continuing reconnect attempts",
+                    self.failures,
+                    exc,
+                )
+            elif self.connected:
+                LOGGER.warning(
+                    "poll failed (%d/%d): %s",
+                    self.failures,
+                    self.config.failure_threshold,
+                    exc,
+                )
+            elif self.failures == 1:
+                LOGGER.warning(
+                    "inverter unavailable: %s; continuing reconnect attempts",
+                    exc,
+                )
+            else:
+                LOGGER.debug("reconnect attempt failed: %s", exc)
+        return True
+
+    def current_limit_writer(self, scope, value):
+        if not self.connected or self.capabilities is None:
+            LOGGER.warning(
+                "refused %s charge-current update while inverter is disconnected",
+                scope,
+            )
+            return False
+        try:
+            verified = _set_charge_current_limit(
+                self.client,
+                self.capabilities,
+                self.config.control,
+                scope,
+                value,
+            )
+        except Exception:
+            LOGGER.exception(
+                "refused or failed %s charge-current update to %r A",
+                scope,
+                value,
+            )
+            return False
+        if self.service is not None:
+            self.service.set_charge_current_limit(scope, verified)
+        LOGGER.info("verified %s charge-current limit at %s A", scope, verified)
+        return True
+
+    def ac_input_current_limit_writer(self, value):
+        if (
+            not self.connected
+            or self.capabilities is None
+            or self.latest_status is None
+        ):
+            LOGGER.warning(
+                "refused AC input current limit update while inverter is disconnected"
+            )
+            return False
+        try:
+            utility_limit = _utility_limit_for_ac_input_limit(
+                self.config.power_estimation,
+                self.latest_status,
+                self.capabilities.selectable_utility_limits,
+                value,
+            )
+        except Exception:
+            LOGGER.exception("refused AC input current limit update to %r A", value)
+            return False
+        return self.current_limit_writer("utility", utility_limit)
+
+    def mode_writer(self, value):
+        if not self.connected or self.capabilities is None:
+            LOGGER.warning("refused charger mode update while inverter is disconnected")
+            return False
+        if self.current_priority != 3:
+            self.enabled_priority = self.current_priority
+        try:
+            self.current_priority = _set_charger_mode(
+                self.client,
+                self.current_priority,
+                self.enabled_priority,
+                value,
+            )
+        except Exception:
+            LOGGER.exception("refused or failed charger mode update to %r", value)
+            return False
+        if self.current_priority != 3:
+            self.enabled_priority = self.current_priority
+        if self.service is not None:
+            self.service.set_charger_source_priority(self.current_priority)
+        LOGGER.info(
+            "verified charger mode at %s using source priority %s",
+            value,
+            self.current_priority,
+        )
+        return True
+
+
 def _run(config) -> int:
     from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib
@@ -221,121 +389,28 @@ def _run(config) -> int:
         config.serial.timeout,
         config.serial.command_delay,
     )
-    identity = _identify(client)
-    initial = _read_status(client)
-    capabilities = _read_available_charge_current_capabilities(
-        client,
-        required=(
-            config.control.allow_current_limit_writes
-            or config.control.allow_mode_writes
-        ),
-    )
-    latest_status = [initial]
     DBusGMainLoop(set_as_default=True)
-
-    service = None
-    current_limit_writer = None
-    if config.control.allow_current_limit_writes:
-        def current_limit_writer(scope, value):
-            try:
-                verified = _set_charge_current_limit(
-                    client, capabilities, config.control, scope, value
-                )
-            except Exception:
-                LOGGER.exception(
-                    "refused or failed %s charge-current update to %r A",
-                    scope,
-                    value,
-                )
-                return False
-            if service is not None:
-                service.set_charge_current_limit(scope, verified)
-            LOGGER.info("verified %s charge-current limit at %s A", scope, verified)
-            return True
-
-    ac_input_current_limit_writer = None
-    if current_limit_writer is not None:
-        def ac_input_current_limit_writer(value):
-            try:
-                utility_limit = _utility_limit_for_ac_input_limit(
-                    config.power_estimation,
-                    latest_status[0],
-                    capabilities.selectable_utility_limits,
-                    value,
-                )
-            except Exception:
-                LOGGER.exception(
-                    "refused AC input current limit update to %r A",
-                    value,
-                )
-                return False
-            return current_limit_writer("utility", utility_limit)
-
-    current_priority = (
-        capabilities.charger_source_priority if capabilities is not None else None
+    controller = _RuntimeController(client, config)
+    current_limit_writer = (
+        controller.current_limit_writer
+        if config.control.allow_current_limit_writes
+        else None
     )
-    enabled_priority = config.control.enabled_charger_source_priority
-    if (
-        enabled_priority is None
-        and current_priority is not None
-        and current_priority != 3
-    ):
-        enabled_priority = current_priority
-    mode_writer = None
-    if config.control.allow_mode_writes and capabilities is not None:
-        def mode_writer(value):
-            nonlocal current_priority, enabled_priority
-            if current_priority != 3:
-                enabled_priority = current_priority
-            try:
-                current_priority = _set_charger_mode(
-                    client,
-                    current_priority,
-                    enabled_priority,
-                    value,
-                )
-            except Exception:
-                LOGGER.exception("refused or failed charger mode update to %r", value)
-                return False
-            if current_priority != 3:
-                enabled_priority = current_priority
-            if service is not None:
-                service.set_charger_source_priority(current_priority)
-            LOGGER.info(
-                "verified charger mode at %s using source priority %s",
-                value,
-                current_priority,
-            )
-            return True
-
+    ac_input_current_limit_writer = (
+        controller.ac_input_current_limit_writer
+        if config.control.allow_current_limit_writes
+        else None
+    )
+    mode_writer = controller.mode_writer if config.control.allow_mode_writes else None
     service = ChargerDbusService(
         config,
-        capabilities=capabilities,
+        capabilities=None,
         current_limit_writer=current_limit_writer,
         ac_input_current_limit_writer=ac_input_current_limit_writer,
         mode_writer=mode_writer,
-        **identity
     )
-    service.publish(initial)
-    failures = 0
+    controller.attach_service(service)
     mainloop = GLib.MainLoop()
-
-    def poll():
-        nonlocal failures
-        try:
-            status = _read_status(client)
-            latest_status[0] = status
-            service.publish(status)
-            failures = 0
-        except Exception:
-            failures += 1
-            LOGGER.exception("poll failed (%d/%d)", failures, config.failure_threshold)
-            client.close()
-            if failures >= config.failure_threshold:
-                service.disconnect()
-                mainloop.quit()
-                return False
-        return True
 
     def stop(_signum, _frame):
         client.close()
@@ -343,10 +418,11 @@ def _run(config) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    GLib.timeout_add(int(config.poll_interval * 1000), poll)
+    controller.poll()
+    GLib.timeout_add(int(config.poll_interval * 1000), controller.poll)
     mainloop.run()
     client.close()
-    return 1 if failures >= config.failure_threshold else 0
+    return 0
 
 
 def main(argv=None) -> int:

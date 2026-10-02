@@ -72,6 +72,13 @@ Driver-specific paths include:
 - `/Capabilities/UtilityChargeCurrentLimits`: live `QMUCHGCR` choices;
 - `/Protocol/*`: identity, source flags, raw charging values and diagnostics.
 
+The D-Bus service remains registered when the inverter is switched off. After
+the configured number of consecutive read failures it publishes
+`/Connected=0`, invalidates live measurements and continues reconnect attempts
+at `poll_interval`. When the inverter returns, the same process revalidates
+`QPI`, `QPIGS` and the available control capabilities before publishing live
+values again. Control writes are refused while disconnected.
+
 `/State` is `3` while AC charging is active and `0` otherwise. PI30 does not
 provide enough information to claim specific Absorption or Float states.
 
@@ -192,10 +199,10 @@ Download and extract the packaged release:
 
 ```sh
 cd /data
-wget -O dbus-voltronic-charger-0.7.0.tar.gz \
-  https://raw.githubusercontent.com/stas-dovgodko/dbus-voltronic-charger/main/dist/dbus-voltronic-charger-0.7.0.tar.gz
-tar -xzf dbus-voltronic-charger-0.7.0.tar.gz
-cd dbus-voltronic-charger-0.7.0
+wget -O dbus-voltronic-charger-0.7.1.tar.gz \
+  https://raw.githubusercontent.com/stas-dovgodko/dbus-voltronic-charger/main/dist/dbus-voltronic-charger-0.7.1.tar.gz
+tar -xzf dbus-voltronic-charger-0.7.1.tar.gz
+cd dbus-voltronic-charger-0.7.1
 chmod +x install.sh activate.sh deactivate.sh uninstall.sh serial-port.sh
 ./install.sh
 ```
@@ -231,7 +238,7 @@ the installed version first, then run the new installer:
 cd /data/apps/dbus-voltronic-charger
 ./deactivate.sh
 
-cd /data/dbus-voltronic-charger-0.7.0
+cd /data/dbus-voltronic-charger-0.7.1
 ./install.sh
 
 cd /data/apps/dbus-voltronic-charger

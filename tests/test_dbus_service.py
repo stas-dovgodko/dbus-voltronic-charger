@@ -156,6 +156,37 @@ class DbusServiceTest(unittest.TestCase):
             service._service.arguments["/Settings/ChargeCurrentLimit"],
         )
 
+    def test_offline_service_accepts_identity_and_capabilities_after_reconnect(self):
+        service = ChargerDbusService(self._config(True))
+        values = service._service.values
+        self.assertEqual(0, values["/Connected"])
+        self.assertIsNone(values["/Protocol/Id"])
+        self.assertIsNone(values["/Settings/ChargeCurrentLimit"])
+
+        capabilities = ChargeCurrentCapabilities(
+            utility_limit=20,
+            total_limit=60,
+            selectable_utility_limits=(2, 10, 20),
+            selectable_total_limits=(10, 20, 30, 40, 50, 60),
+            charger_source_priority=2,
+        )
+        service.set_identity(
+            protocol_id="PI30",
+            inverter_model="OTHER-PI30",
+            serial_number="1234",
+            firmware="VERFW:00072.00",
+        )
+        service.set_capabilities(capabilities)
+        service.publish(parse_qpigs_pi30(DOCUMENTED_SHAPE))
+
+        self.assertEqual(1, values["/Connected"])
+        self.assertEqual("PI30", values["/Protocol/Id"])
+        self.assertEqual("OTHER-PI30", values["/Protocol/Model"])
+        self.assertEqual(60, values["/Settings/ChargeCurrentLimit"])
+        self.assertEqual(20, values["/Settings/UtilityChargeCurrentLimit"])
+        self.assertEqual("10,20,30,40,50,60", values["/Capabilities/ChargeCurrentLimits"])
+        self.assertEqual(1, values["/Mode"])
+
     def test_current_limit_paths_are_writeable_only_with_guarded_callback(self):
         calls = []
 

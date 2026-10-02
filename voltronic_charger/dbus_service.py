@@ -150,41 +150,46 @@ class ChargerDbusService:
         )
         self._add("/Protocol/ModeWritesEnabled", int(mode_writer is not None))
         self._add("/Protocol/ChargerSourcePriority", initial_priority)
-        if capabilities is not None:
-            def total_limit_changed(_path, value):
-                return current_limit_writer("total", value)
+        def total_limit_changed(_path, value):
+            return current_limit_writer("total", value)
 
-            def utility_limit_changed(_path, value):
-                return current_limit_writer("utility", value)
+        def utility_limit_changed(_path, value):
+            return current_limit_writer("utility", value)
 
-            self._add(
-                "/Settings/ChargeCurrentLimit",
-                capabilities.total_limit,
-                _format_value("A", 0),
-                writeable=current_limit_writer is not None,
-                onchange=(
-                    total_limit_changed if current_limit_writer is not None else None
-                ),
-            )
-            self._add(
-                "/Settings/UtilityChargeCurrentLimit",
-                capabilities.utility_limit,
-                _format_value("A", 0),
-                writeable=current_limit_writer is not None,
-                onchange=(
-                    utility_limit_changed
-                    if current_limit_writer is not None
-                    else None
-                ),
-            )
-            self._add(
-                "/Capabilities/ChargeCurrentLimits",
-                capabilities.selectable_total_limits_text,
-            )
-            self._add(
-                "/Capabilities/UtilityChargeCurrentLimits",
-                capabilities.selectable_utility_limits_text,
-            )
+        self._add(
+            "/Settings/ChargeCurrentLimit",
+            capabilities.total_limit if capabilities is not None else None,
+            _format_value("A", 0),
+            writeable=current_limit_writer is not None,
+            onchange=(
+                total_limit_changed if current_limit_writer is not None else None
+            ),
+        )
+        self._add(
+            "/Settings/UtilityChargeCurrentLimit",
+            capabilities.utility_limit if capabilities is not None else None,
+            _format_value("A", 0),
+            writeable=current_limit_writer is not None,
+            onchange=(
+                utility_limit_changed if current_limit_writer is not None else None
+            ),
+        )
+        self._add(
+            "/Capabilities/ChargeCurrentLimits",
+            (
+                capabilities.selectable_total_limits_text
+                if capabilities is not None
+                else None
+            ),
+        )
+        self._add(
+            "/Capabilities/UtilityChargeCurrentLimits",
+            (
+                capabilities.selectable_utility_limits_text
+                if capabilities is not None
+                else None
+            ),
+        )
         self._service.register()
 
     def _add(
@@ -212,7 +217,54 @@ class ChargerDbusService:
             return None
         return CHARGER_MODE_OFF if priority == 3 else CHARGER_MODE_ON
 
-    def set_charger_source_priority(self, priority: int) -> None:
+    def set_identity(
+        self,
+        serial_number=None,
+        firmware=None,
+        protocol_id=None,
+        inverter_model=None,
+    ) -> None:
+        self._set("/FirmwareVersion", firmware)
+        self._set("/Serial", serial_number)
+        self._set("/Protocol/Id", protocol_id)
+        self._set("/Protocol/Model", inverter_model)
+
+    def set_capabilities(self, capabilities: ChargeCurrentCapabilities = None) -> None:
+        self._total_charge_current_limit = (
+            capabilities.total_limit if capabilities is not None else None
+        )
+        self._utility_charge_current_limit = (
+            capabilities.utility_limit if capabilities is not None else None
+        )
+        priority = (
+            capabilities.charger_source_priority if capabilities is not None else None
+        )
+        self._set("/Settings/ChargeCurrentLimit", self._total_charge_current_limit)
+        self._set(
+            "/Settings/UtilityChargeCurrentLimit",
+            self._utility_charge_current_limit,
+        )
+        self._set(
+            "/Capabilities/ChargeCurrentLimits",
+            (
+                capabilities.selectable_total_limits_text
+                if capabilities is not None
+                else None
+            ),
+        )
+        self._set(
+            "/Capabilities/UtilityChargeCurrentLimits",
+            (
+                capabilities.selectable_utility_limits_text
+                if capabilities is not None
+                else None
+            ),
+        )
+        self.set_charger_source_priority(priority)
+        if self._last_status is not None:
+            self._publish_ac_input_current_limit(self._last_status)
+
+    def set_charger_source_priority(self, priority) -> None:
         self._set("/Protocol/ChargerSourcePriority", priority)
         self._set("/Mode", self._mode_for_priority(priority))
 
