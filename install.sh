@@ -61,6 +61,7 @@ if [ "$SOURCE_DIR" != "$APP_DIR" ]; then
     cp "$SOURCE_DIR/activate.sh" "$APP_DIR/activate.sh"
     cp "$SOURCE_DIR/deactivate.sh" "$APP_DIR/deactivate.sh"
     cp "$SOURCE_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
+    cp "$SOURCE_DIR/serial-port.sh" "$APP_DIR/serial-port.sh"
     cp "$SOURCE_DIR/service/run" "$APP_DIR/service/run"
     cp "$SOURCE_DIR/service/log/run" "$APP_DIR/service/log/run"
 fi
@@ -74,10 +75,10 @@ fi
 
 chmod 755 "$APP_DIR/install.sh" "$APP_DIR/activate.sh" \
     "$APP_DIR/deactivate.sh" "$APP_DIR/uninstall.sh" \
+    "$APP_DIR/serial-port.sh" \
     "$APP_DIR/service/run" "$APP_DIR/service/log/run"
 touch "$APP_DIR/service/down"
 
 echo "Installed files under $APP_DIR"
-echo "The service is NOT active and no serial-starter configuration was changed."
-echo "Next: edit config.ini, run the inquiry-only probe, and validate the protocol."
-
+echo "The service is NOT active."
+echo "Next: set an unused device_instance in config.ini and run activate.sh."

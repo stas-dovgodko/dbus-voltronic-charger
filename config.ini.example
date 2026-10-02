@@ -1,30 +1,45 @@
 [serial]
-# The user's current Voltronic connection is /dev/ttyUSB1. This remains fully
-# configurable: replace it with the observed /dev/serial/by-id/... or
-# /dev/serial/by-path/... link when a stable adapter-to-inverter mapping exists.
+# The current Voltronic connection is /dev/ttyUSB1. This remains configurable;
+# a verified by-id or by-path link may be used without changing the driver.
 port = /dev/ttyUSB1
-# 2400/8N1 is specified by the referenced Voltronic PI30 document. Confirm it
-# against the King II 5000 before enabling the service.
 baudrate = 2400
 timeout = 2.0
+# Minimum time between command writes.
+command_delay = 0.5
 
 [protocol]
-# Keep this unconfirmed until a read-only probe returns a CRC-valid PI30
-# response whose QPIGS field count/layout matches the documented profile.
-profile = unconfirmed
-# QPIGS calls one field "battery charging current", but its attribution on the
-# exact King II 5000 is not yet verified. This release rejects true and
-# publishes no current or power into Venus system calculations.
-publish_battery_charging_current = false
+# The live King II returned QPI=PI30, QMN=KING-5000 and a CRC-valid classic
+# 21-field QPIGS response after the serial port was made exclusive.
+profile = pi30
+# Publish QPIGS field 10 as charger output current. Power is calculated once as
+# battery voltage times this current; the separate PV power token is diagnostic.
+publish_battery_charging_current = true
+
+[power_estimation]
+# Classic PI30 does not report measured AC-input power. Estimate charger input
+# as battery charging power divided by efficiency, plus inverter consumption.
+self_consumption_watts = 70
+ac_to_dc_efficiency_percent = 95
+
+[control]
+# Safe default: current-limit paths are read-only. Enable to make both the
+# native DC limit extensions and standard /Ac/In/CurrentLimit writeable.
+allow_current_limit_writes = false
+# Single inverter/master unit. Used only for >100 A total-current commands.
+parallel_unit = 0
+# Safe default: /Mode is read-only. When enabled, Mode=4 selects solar-only
+# charging and Mode=1 restores the priority observed before Mode=4.
+allow_mode_writes = false
+# Optional fallback for enabling utility charging after a service restart while
+# the inverter is already in solar-only mode: 0=utility first, 1=solar first,
+# 2=solar and utility. Leave empty to reject that ambiguous write.
+enabled_charger_source_priority =
 
 [device]
 model = Voltronic King II 5000
 custom_name = Voltronic King II 5000
-# REQUIRED later: choose an unused charger-class instance after inspecting the
-# live Cerbo. No instance is assumed while the installed Venus state is unknown.
+# REQUIRED: choose an unused charger-class instance on the live Cerbo.
 device_instance =
-# Must be unique on the Cerbo. The tty-like suffix is only an identifier; the
-# actual serial path is published separately under /Mgmt/Connection.
 service_name = com.victronenergy.charger.voltronic_king2
 
 [driver]

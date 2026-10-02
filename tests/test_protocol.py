@@ -4,6 +4,8 @@ from voltronic_charger.protocol import (
     ProtocolError,
     crc_bytes,
     decode_response,
+    encode_charger_source_priority,
+    encode_charge_current_setting,
     encode_query,
 )
 
@@ -30,7 +32,48 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             decode_response(b"(PI30")
 
+    def test_current_setting_frames_are_narrowly_constructed(self):
+        for scope, current, expected_payload in (
+            ("total", 60, b"MCHGC060"),
+            ("total", 140, b"MNCHGC0140"),
+            ("utility", 2, b"MUCHGC0002"),
+        ):
+            with self.subTest(scope=scope, current=current):
+                self.assertEqual(
+                    expected_payload + crc_bytes(expected_payload) + b"\r",
+                    encode_charge_current_setting(scope, current),
+                )
+
+    def test_utility_setting_includes_configured_parallel_unit(self):
+        payload = b"MUCHGC3020"
+        self.assertEqual(
+            payload + crc_bytes(payload) + b"\r",
+            encode_charge_current_setting("utility", 20, parallel_unit=3),
+        )
+
+    def test_current_setting_rejects_unscoped_or_invalid_values(self):
+        for scope, current in (
+            ("other", 60),
+            ("total", -1),
+            ("total", 1000),
+            ("utility", 2.5),
+            ("utility", True),
+        ):
+            with self.subTest(scope=scope, current=current):
+                with self.assertRaises(ProtocolError):
+                    encode_charge_current_setting(scope, current)
+
+    def test_charger_source_priority_frames_are_narrowly_constructed(self):
+        command = b"PCP03"
+        self.assertEqual(
+            command + crc_bytes(command) + b"\r",
+            encode_charger_source_priority(3),
+        )
+        for value in (-1, 4, True, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaises(ProtocolError):
+                    encode_charger_source_priority(value)
+
 
 if __name__ == "__main__":
     unittest.main()
-

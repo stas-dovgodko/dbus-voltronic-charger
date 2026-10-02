@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, Union
+from typing import Dict, Tuple, Union
 
 
 JsonScalar = Union[str, float, int, bool]
 
 
 @dataclass(frozen=True)
-class Pi30Status:
-    """Classic 21-token QPIGS response from the candidate PI30 profile.
+class ChargeCurrentCapabilities:
+    """Charge-current settings and choices reported by the inverter."""
 
-    `reported_battery_charging_current` is named conservatively: it records the
-    protocol field without claiming AC-only, PV-only, or total attribution for
-    the King II 5000.
-    """
+    utility_limit: int
+    total_limit: int
+    selectable_utility_limits: Tuple[int, ...]
+    selectable_total_limits: Tuple[int, ...]
+    charger_source_priority: int = 2
+
+    @property
+    def selectable_utility_limits_text(self) -> str:
+        return ",".join(str(value) for value in self.selectable_utility_limits)
+
+    @property
+    def selectable_total_limits_text(self) -> str:
+        return ",".join(str(value) for value in self.selectable_total_limits)
+
+
+@dataclass(frozen=True)
+class Pi30Status:
+    """Classic 21-token QPIGS response from the confirmed PI30 profile."""
 
     grid_voltage: float
     grid_frequency: float
@@ -52,12 +66,21 @@ class Pi30Status:
     def charging(self) -> bool:
         return self.status_bits[5] == "1"
 
+    @property
+    def charger_active(self) -> bool:
+        return (
+            self.charging
+            or self.ac_charging
+            or self.scc_charging
+            or self.reported_battery_charging_current > 0
+        )
+
     def as_dict(self) -> Dict[str, JsonScalar]:
         values = asdict(self)
         values.update(
             ac_charging=self.ac_charging,
             scc_charging=self.scc_charging,
             charging=self.charging,
+            charger_active=self.charger_active,
         )
         return values
-

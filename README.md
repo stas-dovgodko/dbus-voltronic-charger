@@ -1,279 +1,261 @@
-# Voltronic King II 5000 charger telemetry for Venus OS
+# dbus-voltronic-charger
 
-This project is an **early, read-only foundation** for reading a Voltronic
-King II 5000 inverter over serial and eventually exposing its verified battery
-charging output as an additional `com.victronenergy.charger` device on a
-Victron Cerbo / Venus OS system.
+Venus OS driver for exposing a Voltronic King II 5000 as an additional
+`com.victronenergy.charger` service on a Cerbo GX.
 
-The probe and driver can transmit only an explicit allowlist of inquiry
-commands. The included Cerbo installer is staged: it installs files but does
-not activate the service, alter serial-starter, or claim a serial port.
+The driver publishes battery-side charger telemetry, AC input/output data,
+charger state, errors and guarded current/mode controls. Setting commands are
+disabled by default and must be explicitly enabled in `config.ini`.
 
-## Cerbo installation and first test
+## Venus OS integration
 
-These instructions assume a Venus OS image that has `/usr/bin/python3`, the
-Python `serial`, `dbus`, and `gi` modules, Victron `velib_python`, runit tools,
-`wget`, and `unzip`. The installer verifies the runtime pieces it needs and
-stops if they are missing. The exact Cerbo hardware and installed Venus release
-have not yet been supplied, so compatibility is not promised for every image.
+The Voltronic charger appears alongside the native Victron inverter/chargers:
 
-Before installation, record the runtime:
+![Voltronic King II in the Venus OS device list](docs/images/venus-device-list.png)
 
-```sh
-cat /opt/victronenergy/version
-uname -m
-/usr/bin/python3 --version
-/usr/bin/python3 -c 'import serial; print(serial.__version__)'
+The device page exposes the standard charger switch and AC input-current limit.
+This live capture shows `49.60 V`, `20.0 A` DC charging, an estimated `4.9 A`
+AC input current and no active error:
+
+![Voltronic King II charger details in Venus OS](docs/images/venus-voltronic-charger.png)
+
+## Confirmed target
+
+- Inverter: Voltronic King II 5000.
+- Protocol identity: `PI30`.
+- Model response: `KING-5000`.
+- Serial speed: 2400 baud, 8N1.
+- Venus OS: v3.80 on Cerbo GX.
+- Application directory: `/data/apps/dbus-voltronic-charger`.
+- Configured inverter port: `/dev/ttyUSB1`.
+- Tested adapter: CH340/CH341, VID:PID `1a86:7523`.
+
+The serial port is mandatory configuration. The driver never guesses another
+port and its lifecycle scripts operate only on the configured tty. In the
+confirmed installation, Pylontech remains on `/dev/ttyUSB0` and is not touched.
+
+## D-Bus data model
+
+The default service name is
+`com.victronenergy.charger.voltronic_king2`.
+
+Standard charger paths include:
+
+- `/Connected`, `/DeviceInstance`, `/ProductName`, `/CustomName`;
+- `/Dc/0/Voltage`, `/Dc/0/Current`, `/Dc/0/Power`;
+- `/State`, `/Mode`, `/ErrorCode`, `/NrOfOutputs`;
+- `/Ac/In/L1/V`, `/Ac/In/L1/F`, `/Ac/In/L1/I`, `/Ac/In/L1/P`;
+- `/Ac/In/CurrentLimit`;
+- `/Ac/Out/L1/V`, `/Ac/Out/L1/F`, `/Ac/Out/L1/P`, `/Ac/Out/L1/S`;
+- `/Ac/Out/L1/LoadPercentage`.
+
+Driver-specific paths include:
+
+- `/Settings/ChargeCurrentLimit`: total DC charging-current limit;
+- `/Settings/UtilityChargeCurrentLimit`: utility charger DC-current limit;
+- `/Capabilities/ChargeCurrentLimits`: live `QMCHGCR` choices;
+- `/Capabilities/UtilityChargeCurrentLimits`: live `QMUCHGCR` choices;
+- `/Protocol/*`: identity, source flags, raw charging values and diagnostics.
+
+`/State` is `3` while AC charging is active and `0` otherwise. PI30 does not
+provide enough information to claim specific Absorption or Float states.
+
+### Current and power attribution
+
+QPIGS reports one battery charging-current value. The driver publishes it as
+the AC charger's `/Dc/0/Current` only during AC-only charging and calculates
+`/Dc/0/Power` once as battery voltage multiplied by current.
+
+PV charging power remains under `/Protocol/PvChargingPower`; it is not added to
+the standard charger power. During simultaneous AC and SCC charging, standard
+DC current and power are invalidated because PI30 cannot split the two sources
+reliably. This avoids fabricated values and double counting.
+
+### Estimated AC input
+
+Classic 21-field PI30 QPIGS does not report measured AC input current or power.
+For AC-only charging the driver estimates them as:
+
+```text
+AC input power = battery voltage * DC charge current / efficiency + self consumption
+AC input current = AC input power / AC input voltage
 ```
 
-Download without assuming Git is installed:
+The defaults are 70 W self-consumption and 95% efficiency. Both are
+configurable. `/Protocol/AcInputPowerEstimated=1` marks these values as
+estimated. AC output load is deliberately not added to the charger estimate.
+
+### Current control
+
+The inverter supplies its valid DC current choices through `QMCHGCR` and
+`QMUCHGCR`; the driver does not hard-code them. Every write must use a live
+choice, receive `(ACK`, and match the following `QPIRI` read-back.
+
+The standard `/Ac/In/CurrentLimit` uses AC amperes. The driver converts it to a
+DC utility-charger budget using live AC and battery voltage, configured
+efficiency and self-consumption, then selects the highest live `QMUCHGCR`
+choice that does not exceed that budget.
+
+For an exact battery-side limit, write the DC extension directly:
+
+```sh
+dbus -y com.victronenergy.charger.voltronic_king2 \
+  /Settings/UtilityChargeCurrentLimit SetValue 20
+```
+
+On the confirmed single King II, `parallel_unit=0` produces `MUCHGC0020` for a
+20 A utility DC limit. The live inverter accepted this frame and reported
+20.0 A charging after read-back verification.
+
+`/Settings/ChargeCurrentLimit` is the total AC+PV charging limit. The inverter
+enforces both settings, so actual utility charging cannot exceed either one.
+
+### Mode control
+
+`/Mode` follows the charger convention `1=On`, `4=Off`. Off selects charger
+source priority `3` (solar only). On restores the last known enabled priority,
+or `enabled_charger_source_priority` after a restart. The live King II has
+confirmed both transitions with QPIRI read-back.
+
+## Configuration
+
+Start from `config.ini.example`. The essential settings are:
+
+```ini
+[serial]
+port = /dev/ttyUSB1
+baudrate = 2400
+timeout = 2.0
+command_delay = 0.5
+
+[protocol]
+profile = pi30
+publish_battery_charging_current = true
+
+[power_estimation]
+self_consumption_watts = 70
+ac_to_dc_efficiency_percent = 95
+
+[control]
+allow_current_limit_writes = false
+parallel_unit = 0
+allow_mode_writes = false
+enabled_charger_source_priority =
+
+[device]
+device_instance =
+service_name = com.victronenergy.charger.voltronic_king2
+```
+
+Choose an unused charger-class `device_instance` before activation:
+
+```sh
+dbus -y | grep 'com.victronenergy.charger' || true
+dbus -y SERVICE_NAME /DeviceInstance GetValue
+```
+
+Set `allow_current_limit_writes=true` and `allow_mode_writes=true` only when
+remote control is intentional. When On must work after restarting in
+solar-only mode, set `enabled_charger_source_priority` to `0`, `1`, or `2`.
+
+## Fresh installation on Cerbo
+
+Download and extract the packaged release:
 
 ```sh
 cd /data
-wget -O dbus-voltronic-charger-main.zip \
-  https://github.com/stas-dovgodko/dbus-voltronic-charger/archive/refs/heads/main.zip
-unzip dbus-voltronic-charger-main.zip
-cd dbus-voltronic-charger-main
-chmod +x install.sh activate.sh deactivate.sh uninstall.sh
+wget -O dbus-voltronic-charger-0.6.1.tar.gz \
+  https://raw.githubusercontent.com/stas-dovgodko/dbus-voltronic-charger/main/dist/dbus-voltronic-charger-0.6.1.tar.gz
+tar -xzf dbus-voltronic-charger-0.6.1.tar.gz
+cd dbus-voltronic-charger-0.6.1
+chmod +x install.sh activate.sh deactivate.sh uninstall.sh serial-port.sh
 ./install.sh
 ```
 
-This creates `/data/apps/dbus-voltronic-charger/config.ini` and leaves a
-`service/down` marker. It does not create an active service link. On an update,
-an existing inactive installation is copied to a timestamped backup first and
-its `config.ini` is preserved.
+The installer copies the application to `/data/apps/dbus-voltronic-charger`,
+preserves an existing `config.ini`, and leaves the service inactive.
 
-Review the two unresolved configuration items:
+Edit the installed configuration and run the inquiry/read-back check:
 
 ```sh
 vi /data/apps/dbus-voltronic-charger/config.ini
-```
-
-- `port = /dev/ttyUSB1` is the user's current working Voltronic port. It stays
-  configurable; use a verified `by-id` or `by-path` link when available.
-- `device_instance` is intentionally blank. Select an unused charger-class
-  device instance from the live Cerbo before activation.
-- Leave `profile = unconfirmed` and current publication disabled for the first
-  probe.
-
-Make sure another process is not holding the chosen port. These commands are
-read-only; availability varies by Venus image:
-
-```sh
-fuser /dev/ttyUSB1 2>/dev/null || true
-ls -l /service | grep -E 'ttyUSB1|voltronic' || true
-```
-
-Run the inquiry-only capture from the installed files:
-
-```sh
-cd /data/apps/dbus-voltronic-charger
-PYTHONPATH=. /usr/bin/python3 -m voltronic_charger.probe \
-  --port /dev/ttyUSB1 --baudrate 2400 \
-  --command QPI --command QMN --command QID --command QVFW \
-  --command QVFW2 --command QPIGS --command QMOD \
-  | tee king2-probe.json
-```
-
-Each successful item includes the complete response as `raw_hex`. Keep and
-share `king2-probe.json` for validation. If 2400 baud returns no CRC-valid
-responses, stop; do not enable the service or try setting commands.
-
-### Staged D-Bus activation
-
-Only when the capture confirms the classic PI30 identity and exact 21-field
-`QPIGS` shape, edit `config.ini` and set `profile = pi30`. Fill the unused
-`device_instance`, but keep
-`publish_battery_charging_current = false`. Then test one parse without D-Bus:
-
-```sh
 cd /data/apps/dbus-voltronic-charger
 PYTHONPATH=. /usr/bin/python3 -m voltronic_charger.main \
   --config ./config.ini --once
 ```
 
-If that succeeds, explicitly activate:
+Activate only after the one-shot output identifies `PI30` and `KING-5000`:
 
 ```sh
 ./activate.sh --confirm-pi30
+sleep 8
 svstat /service/dbus-voltronic-charger
-tail -f /var/log/dbus-voltronic-charger/current
+tail -n 30 /var/log/dbus-voltronic-charger/current
 ```
 
-Activation refuses an unconfirmed profile, missing device instance, missing
-runtime dependency, or a foreign `/service/dbus-voltronic-charger` path. It
-adds only this service's exact boot hook to `/data/rc.local`; it does not stop,
-restart, configure, or delete serial-starter or another driver.
+## Updating
 
-With current publication disabled, the D-Bus service is useful for integration
-and voltage/connection testing but contributes no charger current or power to
-Venus totals. This release rejects configurations that enable current
-publication. A later code update can lift that gate only after the King II
-field is validated under AC-only, PV-only, combined, and idle conditions.
+The installer intentionally refuses to overwrite an active service. Deactivate
+the installed version first, then run the new installer:
 
-### Stop, uninstall, and rollback
+```sh
+cd /data/apps/dbus-voltronic-charger
+./deactivate.sh
 
-Stop the service while preserving all files and configuration:
+cd /data/dbus-voltronic-charger-0.6.1
+./install.sh
+
+cd /data/apps/dbus-voltronic-charger
+./activate.sh --confirm-pi30
+sleep 8
+dbus -y com.victronenergy.charger.voltronic_king2 /DriverVersion GetValue
+```
+
+The installer creates a timestamped backup and preserves `config.ini`.
+
+## Serial ownership
+
+Before each start, `serial-port.sh acquire` resolves the configured path to its
+tty basename and calls Venus `stop-tty.sh` for that tty only. Venus OS v3.80
+does not provide `timeout`, so the project uses a bounded POSIX-shell watchdog.
+It does not stop global `serial-starter` or target another USB adapter.
+
+Deactivation releases the same configured tty through `start-tty.sh`:
 
 ```sh
 /data/apps/dbus-voltronic-charger/deactivate.sh
 ```
 
-Uninstall recoverably:
+Recoverable uninstall:
 
 ```sh
 /data/apps/dbus-voltronic-charger/uninstall.sh
 ```
 
-The uninstaller removes only an owned service link and this project's exact
-boot-hook line, then moves the whole application directory to a timestamped
-`.removed.*` backup. It prints the exact `mv` command for rollback. It does not
-recursively delete files, follow symlink targets, or change another driver.
+The uninstaller moves the application to a timestamped `.removed.*` directory
+instead of recursively deleting it.
 
-## Current safety state
-
-- Exact target: **Voltronic King II 5000** (user-confirmed model name).
-- Exact hardware revision, firmware, protocol identifier, and response layout:
-  **not yet confirmed**.
-- The two working Cerbo USB adapters are a PL2303 (`067b:2303`) and a
-  CH340/CH341-family device (`1a86:7523`). Which adapter is connected to this
-  inverter is unknown.
-- No `ttyUSB0` assumption is made. The user's current Voltronic connection is
-  `/dev/ttyUSB1`; `serial.port` remains configurable and may instead use an
-  observed `/dev/serial/by-id/...` or `/dev/serial/by-path/...` link.
-- `protocol.profile` defaults to `unconfirmed`; the D-Bus driver refuses to
-  start in that state.
-- `publish_battery_charging_current` defaults to `false`. Voltage can be
-  displayed after the PI30 profile is confirmed, but current and power remain
-  invalid (`None`) and therefore do not enter Venus charger totals.
-- No charge stage is inferred. The PI30 status bits indicate charging sources,
-  not a trustworthy Bulk/Absorption/Float stage, so `/State` stays invalid.
-
-## Evidence and remaining assumption
-
-The closest primary protocol source located is Voltronic's official
-**AXPERT KS&MKS&V Communication Protocol** (2017). It specifies:
-
-- RS-232 at 2400 baud, 8 data bits, no parity, 1 stop bit;
-- command/response framing as payload + two CRC bytes + carriage return;
-- read-only inquiries including `QID`, `QVFW`, `QPIGS`, `QMOD`, and `QPIWS`;
-- the classic 21-token `QPIGS` response, including battery voltage and a field
-  described as "battery charging current".
-
-Source:
-<https://ftps.voltronic.com.tw/E/Easunpower-93CB312922AC474787C6/RS232%20%E9%80%9A%E8%A8%8A%E5%8D%94%E8%AD%B0(communication%20protocol)/Axpert%20KS&MKS&V%20RS232%20Protocol-C(20170821).pdf>
-
-That document does **not** name the King II 5000. The `pi30` parser in this
-repository is consequently a candidate profile, not a declaration that every
-King II 5000 uses that exact layout. A CRC-valid live capture is required.
-
-For Venus OS, Victron's D-Bus API requires product services on the system bus,
-SI units, a unique device instance within a class, and serial product-service
-names such as `com.victronenergy.charger.<unique suffix>`:
-<https://github.com/victronenergy/venus/wiki/dbus-api>
-
-Victron's own `dbus-systemcalc-py` reads charger output 0 voltage and current,
-then adds `voltage * current` to `/Dc/Charger/Power`:
-<https://github.com/victronenergy/dbus-systemcalc-py/blob/master/dbus_systemcalc.py>
-
-Victron's published Modbus mapping documents the charger paths used here:
-`/Dc/0/Voltage`, `/Dc/0/Current`, `/State`, and `/ErrorCode`:
-<https://github.com/victronenergy/dbus_modbustcp/blob/master/attributes.csv>
-
-## Read-only identification on the Cerbo
-
-First identify the physical adapter without stopping services or changing any
-configuration:
+## Verification and development
 
 ```sh
-ls -l /dev/serial/by-id/ 2>/dev/null
-for d in /dev/ttyUSB*; do
-  echo "=== $d ==="
-  udevadm info --query=property --name="$d" | grep -E '^(ID_VENDOR_ID|ID_MODEL_ID|ID_SERIAL|ID_PATH)='
-done
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q voltronic_charger
+sh -n install.sh activate.sh deactivate.sh uninstall.sh serial-port.sh \
+  service/run service/log/run
 ```
 
-Correlate the cable physically (unplug/replug only if operationally safe) and
-record the stable `/dev/serial/by-id/...` link. Neither adapter ID proves which
-device is the inverter.
+The test suite covers protocol framing, live King II response parsing, dynamic
+current capabilities, guarded writes, ACK/NAK handling, QPIRI verification,
+mode control, serial pacing, AC/DC publication, mixed-source protection and
+packaging safety.
 
-Create a local environment on a normal development machine and run tests:
+## Known limits
 
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -e . pytest
-python3 -m pytest
-```
+- AC input current and power are estimates, not measurements.
+- AC+SCC charging cannot be split with the confirmed 21-field QPIGS response.
+- `/Ac/In/CurrentLimit` is a charger-only AC budget; it does not include loads
+  supplied through the King AC output.
+- The runtime currently requires exact live identity `PI30` and `KING-5000`.
 
-The standalone probe requires Python 3.8 or newer plus `pyserial>=3.4`. From the project
-root, verify the dependency without opening a serial port:
-
-```sh
-python3 -c 'import serial; print(serial.__version__)'
-```
-
-Then, on a system with the inverter serial cable available, run this exact
-read-only capture using the currently confirmed port:
-
-```sh
-python3 -m voltronic_charger.probe --port /dev/ttyUSB1 --baudrate 2400 \
-  --command QPI --command QMN --command QID --command QVFW \
-  --command QVFW2 --command QPIGS --command QMOD | tee king2-probe.json
-```
-
-The probe prints JSON with decoded payloads and each complete wire response in
-the `raw_hex` field; `tee` also saves that same output to `king2-probe.json` for
-protocol validation. It does not send any setting command. A stable path can be
-substituted later without code changes, for example:
-
-```sh
-python3 -m voltronic_charger.probe \
-  --port /dev/serial/by-id/REPLACE_WITH_OBSERVED_LINK \
-  --baudrate 2400 --command QPI --command QPIGS | tee king2-probe.json
-```
-
-If 2400 baud yields no valid frame, stop and preserve the observation; do not
-cycle through random write protocols.
-
-## Enabling the candidate profile (not deployment)
-
-Only after the live data shows a protocol identity compatible with PI30 and an
-exact 21-token `QPIGS` response matching the documented field shapes:
-
-1. Copy `config.ini.example` to `config.ini`.
-2. Keep `/dev/ttyUSB1` while it is the confirmed current port, or replace
-   `serial.port` with an observed stable `by-id`/`by-path` link.
-3. Set `protocol.profile = pi30`.
-4. Keep `publish_battery_charging_current = false` until the current field is
-   compared against the inverter display and charging sources.
-5. Run `python3 -m voltronic_charger.main --config config.ini --once` offline
-   from service management to inspect one parsed sample.
-
-The D-Bus process mode and staged Cerbo tooling are included, but activation is
-separate from installation and remains blocked until PI30 is confirmed.
-
-## Why current is gated
-
-The candidate PI30 layout calls token 10 "battery charging current" and also
-publishes PV-specific values and AC/SCC charging flags. That does not by itself
-prove whether the exact King II firmware reports total charge current, one
-charger's contribution, a rounded value, or a value with model-specific
-semantics. Publishing it prematurely as `/Dc/0/Current` would alter Venus
-system totals. This release rejects `true` for the current-publication option
-and always leaves `/Dc/0/Current` and `/Dc/0/Power` invalid.
-
-## Concrete input still needed
-
-- The stable `/dev/serial/by-id/...` or `by-path/...` link and its VID:PID for
-  the inverter. The current working node is `/dev/ttyUSB1`.
-- Raw JSON output from the inquiry-only probe above.
-- Exact King II label details (full type code/hardware revision) and firmware
-  returned by `QVFW`/`QVFW2`.
-- Installed Venus OS version (`cat /opt/victronenergy/version`) and architecture
-  (`uname -m`) before any later packaging or service work.
-- An unused `com.victronenergy.charger` device instance from the live Cerbo;
-  the example deliberately leaves `device_instance` blank.
-- A comparison of reported QPIGS current with the front panel while AC-only,
-  PV-only, combined charging, and idle, if those operating states can be
-  observed safely.
+See [HANDOFF.md](HANDOFF.md) for captured protocol evidence and remaining live
+validation notes.

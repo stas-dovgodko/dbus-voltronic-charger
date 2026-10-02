@@ -1,7 +1,7 @@
 [project]
 name = "voltronic-charger"
-version = "0.1.0"
-description = "Read-only Voltronic inverter telemetry bridge for Victron Venus OS"
+version = "0.6.1"
+description = "Voltronic AC charger telemetry and guarded control bridge for Venus OS"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 dependencies = ["pyserial>=3.4"]
@@ -12,4 +12,3 @@ voltronic-charger = "voltronic_charger.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

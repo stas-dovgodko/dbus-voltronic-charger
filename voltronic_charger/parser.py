@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from typing import Tuple
 
-from .models import Pi30Status
+from .models import ChargeCurrentCapabilities, Pi30Status
 from .protocol import ProtocolError
 
 
@@ -27,6 +28,85 @@ def parse_text_response(payload: str) -> str:
     if value == "NAK":
         raise ProtocolError("inverter rejected or does not support the inquiry")
     return value
+
+
+def parse_charge_current_options(payload: str) -> Tuple[int, ...]:
+    """Parse an inverter-provided selectable current list without assumptions."""
+
+    value = parse_text_response(payload)
+    fields = value.split()
+    if not fields:
+        raise ProtocolError("charge-current option list is empty")
+    options = []
+    for field in fields:
+        if not field.isdigit():
+            raise ProtocolError(
+                "invalid charge-current option: {!r}".format(field)
+            )
+        current = int(field)
+        if current not in options:
+            options.append(current)
+    return tuple(options)
+
+
+def parse_qpiri_charge_limits(payload: str) -> Tuple[int, int]:
+    """Return current utility and total charge limits from PI30 QPIRI."""
+
+    if not payload.startswith("("):
+        raise ProtocolError("QPIRI response does not start with '('")
+    fields = payload[1:].split()
+    if len(fields) < 15:
+        raise ProtocolError(
+            "PI30 QPIRI requires at least 15 fields; received {}".format(len(fields))
+        )
+    for index, name in (
+        (13, "utility charge-current limit"),
+        (14, "total charge-current limit"),
+    ):
+        if not fields[index].isdigit():
+            raise ProtocolError("invalid {}: {!r}".format(name, fields[index]))
+    return int(fields[13]), int(fields[14])
+
+
+def parse_qpiri_charger_source_priority(payload: str) -> int:
+    """Return the configured PI30 charger-source priority."""
+
+    if not payload.startswith("("):
+        raise ProtocolError("QPIRI response does not start with '('")
+    fields = payload[1:].split()
+    if len(fields) < 18:
+        raise ProtocolError(
+            "PI30 QPIRI requires at least 18 fields; received {}".format(len(fields))
+        )
+    if not fields[17].isdigit():
+        raise ProtocolError(
+            "invalid charger-source priority: {!r}".format(fields[17])
+        )
+    priority = int(fields[17])
+    if priority not in (0, 1, 2, 3):
+        raise ProtocolError(
+            "unsupported charger-source priority: {}".format(priority)
+        )
+    return priority
+
+
+def build_charge_current_capabilities(
+    qpiri_payload: str,
+    total_options_payload: str,
+    utility_options_payload: str,
+) -> ChargeCurrentCapabilities:
+    """Build capabilities exclusively from values returned by the inverter."""
+
+    utility_limit, total_limit = parse_qpiri_charge_limits(qpiri_payload)
+    return ChargeCurrentCapabilities(
+        utility_limit=utility_limit,
+        total_limit=total_limit,
+        selectable_utility_limits=parse_charge_current_options(
+            utility_options_payload
+        ),
+        selectable_total_limits=parse_charge_current_options(total_options_payload),
+        charger_source_priority=parse_qpiri_charger_source_priority(qpiri_payload),
+    )
 
 
 def _number(value: str, conversion, name: str):
@@ -84,4 +164,3 @@ def parse_qpigs_pi30(payload: str) -> Pi30Status:
         pv_charging_power=_number(fields[19], int, "PV charging power"),
         extended_status_bits=_bits(fields[20], 3, "extended status bits"),
     )
-

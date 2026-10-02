@@ -6,6 +6,6 @@ export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export VELIB_PYTHON="/opt/victronenergy/dbus-systemcalc-py/ext/velib_python"
 
 exec 2>&1
+"$APP_DIR/serial-port.sh" acquire
 exec /usr/bin/python3 -u -m voltronic_charger.main \
     --config "$APP_DIR/config.ini"
-

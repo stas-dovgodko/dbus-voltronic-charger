@@ -22,6 +22,12 @@ def _arguments(argv=None):
     parser.add_argument("--baudrate", type=int, default=2400)
     parser.add_argument("--timeout", type=float, default=2.0)
     parser.add_argument(
+        "--command-delay",
+        type=float,
+        default=0.5,
+        help="Minimum seconds between command writes",
+    )
+    parser.add_argument(
         "--command",
         action="append",
         choices=sorted(READ_ONLY_COMMANDS),
@@ -40,7 +46,9 @@ def main(argv=None) -> int:
     args = _arguments(argv)
     commands = tuple(args.command or DEFAULT_COMMANDS)
     results = []
-    client = SerialQueryClient(args.port, args.baudrate, args.timeout)
+    client = SerialQueryClient(
+        args.port, args.baudrate, args.timeout, args.command_delay
+    )
     try:
         for command in commands:
             record = {"command": command}
@@ -70,4 +78,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

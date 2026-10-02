@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest import mock
 
 from voltronic_charger.protocol import ProtocolError, crc_bytes
 from voltronic_charger.serial_client import SerialQueryClient
@@ -72,6 +73,45 @@ class SerialClientTest(unittest.TestCase):
                 sys.modules.pop("serial", None)
             else:
                 sys.modules["serial"] = original
+
+    def test_configurable_delay_paces_back_to_back_queries(self):
+        payload = b"(PI30"
+        response = payload + crc_bytes(payload) + b"\r"
+        fake = FakeSerial(response)
+        client = SerialQueryClient(
+            "fake", command_delay=0.5, serial_instance=fake
+        )
+        with mock.patch(
+            "voltronic_charger.serial_client.time.monotonic",
+            side_effect=(10.0, 10.1),
+        ), mock.patch("voltronic_charger.serial_client.time.sleep") as sleep:
+            client.query("QPI")
+            client.query("QPI")
+        sleep.assert_called_once()
+        self.assertAlmostEqual(0.4, sleep.call_args.args[0])
+
+    def test_current_setting_requires_ack(self):
+        payload = b"(ACK"
+        fake = FakeSerial(payload + crc_bytes(payload) + b"\r")
+        client = SerialQueryClient("fake", serial_instance=fake)
+        client.set_charge_current_limit("utility", 2)
+        command = b"MUCHGC0002"
+        self.assertEqual([command + crc_bytes(command) + b"\r"], fake.writes)
+
+    def test_current_setting_rejects_nak(self):
+        payload = b"(NAK"
+        fake = FakeSerial(payload + crc_bytes(payload) + b"\r")
+        client = SerialQueryClient("fake", serial_instance=fake)
+        with self.assertRaises(ProtocolError):
+            client.set_charge_current_limit("total", 60)
+
+    def test_charger_source_priority_setting_requires_ack(self):
+        payload = b"(ACK"
+        fake = FakeSerial(payload + crc_bytes(payload) + b"\r")
+        client = SerialQueryClient("fake", serial_instance=fake)
+        client.set_charger_source_priority(3)
+        command = b"PCP03"
+        self.assertEqual([command + crc_bytes(command) + b"\r"], fake.writes)
 
 
 if __name__ == "__main__":

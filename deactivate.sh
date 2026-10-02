@@ -43,5 +43,10 @@ if [ -f "$RC_LOCAL" ] && grep -Fqx "$BOOT_HOOK" "$RC_LOCAL"; then
     chmod 755 "$RC_LOCAL"
 fi
 
+if [ -x "$APP_DIR/serial-port.sh" ] && [ -f "$APP_DIR/config.ini" ]; then
+    "$APP_DIR/serial-port.sh" release || \
+        echo "Warning: failed to return the configured port to serial-starter." >&2
+fi
+
 echo "Deactivated $APP_NAME; application files and config were preserved."
-echo "No other service or serial-starter state was changed."
+echo "The configured serial port was returned to serial-starter."

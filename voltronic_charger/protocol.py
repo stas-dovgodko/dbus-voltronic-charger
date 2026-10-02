@@ -1,4 +1,4 @@
-"""Wire framing for the read-only Voltronic Q-command protocol."""
+"""Wire framing for Voltronic inquiries and guarded charger settings."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ class ProtocolError(ValueError):
     """A command or response violates the supported wire protocol."""
 
 
-# Inquiry commands only. Setting/control commands are deliberately absent.
+# The general command entry point remains inquiry-only. Current-limit setting
+# frames can only be constructed through encode_charge_current_setting().
 READ_ONLY_COMMANDS: FrozenSet[str] = frozenset(
     {
         "QPI",
@@ -78,6 +79,51 @@ def encode_query(command: str) -> bytes:
     return payload + crc_bytes(payload) + b"\r"
 
 
+def encode_charge_current_setting(
+    scope: str, current: int, parallel_unit: int = 0
+) -> bytes:
+    """Encode one narrowly scoped current-limit command.
+
+    The caller must still validate ``current`` against the live selectable
+    values reported by the inverter.
+    """
+
+    if isinstance(current, bool) or not isinstance(current, int):
+        raise ProtocolError("charge-current setting must be an integer")
+    if current < 0 or current > 999:
+        raise ProtocolError("charge-current setting must be between 0 and 999 A")
+    if isinstance(parallel_unit, bool) or not isinstance(parallel_unit, int):
+        raise ProtocolError("parallel unit must be an integer")
+    if parallel_unit < 0 or parallel_unit > 9:
+        raise ProtocolError("parallel unit must be between 0 and 9")
+
+    if scope == "total":
+        if current > 100:
+            command = "MNCHGC{}{:03d}".format(parallel_unit, current)
+        else:
+            command = "MCHGC{:03d}".format(current)
+    elif scope == "utility":
+        # King-family PI30 firmware expects the target parallel-unit number
+        # before the three-digit utility current, including for unit zero.
+        command = "MUCHGC{}{:03d}".format(parallel_unit, current)
+    else:
+        raise ProtocolError("unknown charge-current setting scope: {!r}".format(scope))
+
+    payload = command.encode("ascii")
+    return payload + crc_bytes(payload) + b"\r"
+
+
+def encode_charger_source_priority(priority: int) -> bytes:
+    """Encode one PI30 charger-source priority setting."""
+
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        raise ProtocolError("charger-source priority must be an integer")
+    if priority not in (0, 1, 2, 3):
+        raise ProtocolError("charger-source priority must be between 0 and 3")
+    payload = "PCP{:02d}".format(priority).encode("ascii")
+    return payload + crc_bytes(payload) + b"\r"
+
+
 def decode_response(frame: bytes) -> str:
     """Validate and decode one complete response frame, returning its payload."""
 
@@ -99,4 +145,3 @@ def decode_response(frame: bytes) -> str:
         return payload.decode("ascii")
     except UnicodeDecodeError as exc:
         raise ProtocolError("response payload is not ASCII") from exc
-
